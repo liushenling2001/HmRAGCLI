@@ -20,8 +20,12 @@ Do not commit real runtime configuration. Use:
 
 ## Build
 
+Use Java 25 for the Java backend build.
+
 ```powershell
 cd java-backend
+$env:JAVA_HOME = "D:\java"
+$env:Path = "$env:JAVA_HOME\bin;$env:Path"
 mvn package
 ```
 

@@ -1,6 +1,6 @@
 # HmRAG Java Backend
 
-This is the new Spring Boot rewrite of the HmRAG backend.
+This is the Spring Boot backend for HmRAGCLI.
 
 Current scope:
 
@@ -8,19 +8,18 @@ Current scope:
 - source file scanning and inventory
 - batch ingest job creation
 - failure visibility API
-- PostgreSQL schema managed by Flyway
-
-Not migrated yet:
-
-- real parser workers
-- AI classification
-- extraction
-- embeddings and search
-- query and QA routes
+- document parsing, extraction, embeddings, search, and QA routes
+- domain knowledge refinement and memory pack APIs
+- PostgreSQL schema bootstrap and offline upgrade SQL scripts
 
 ## Run
 
-```bash
+Use Java 25.
+
+```powershell
 cd java-backend
-mvn spring-boot:run
+$env:JAVA_HOME = "D:\java"
+$env:Path = "$env:JAVA_HOME\bin;$env:Path"
+mvn package
+java -Xms1g -Xmx3g -jar target\hmrag-java-backend-0.1.0.jar --spring.config.location=file:application.yml
 ```
