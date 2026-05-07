@@ -15,10 +15,8 @@ java-backend/target/
 target/
 *.class
 
-# Node / frontend dependencies and build outputs
-frontend/node_modules/
-frontend/dist/
-frontend/build/
+# Node / frontend local source and build workspace
+frontend/
 node_modules/
 dist/
 build/

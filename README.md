@@ -4,8 +4,8 @@ HmRAGCLI is a local/offline RAG system with a Java backend, Vue operations UI, P
 
 ## Main Modules
 
-- `java-backend/`: Spring Boot backend, database migrations, offline SQL scripts, packaged UI resources.
-- `frontend/`: Vue operations UI source.
+- `java-backend/`: Spring Boot backend, database migrations, offline SQL scripts, and generated UI resources under `src/main/resources/static/`.
+- `frontend/`: local Vue UI source workspace, ignored by Git; commit generated UI resources only.
 - `backend/`: legacy/Python service code kept for compatibility and reference.
 - `docs/`: design notes, API notes, and generated architecture documents.
 - `scripts/`: helper scripts.
