@@ -312,7 +312,8 @@ public class QueryService {
         }
 
         int eachLimit = Math.max(positive(queryConfig.evidenceLimitBase(), 20), limit);
-        List<QueryDtos.SearchItem> results = new ArrayList<>(eachLimit * 2);
+        List<QueryDtos.SearchItem> results = new ArrayList<>(eachLimit * 3);
+        results.addAll(fetchKeywordDocumentEvidence(keyword, excludeDevDocs, eachLimit, candidateDocIds));
         results.addAll(fetchKeywordKnowledgeUnitEvidence(keyword, excludeDevDocs, eachLimit, candidateDocIds, unitSearch));
         results.addAll(fetchKeywordChunkEvidence(keyword, excludeDevDocs, eachLimit, candidateDocIds, chunkSearch));
         return results.stream()
@@ -326,10 +327,12 @@ public class QueryService {
     }
 
     private List<UUID> fetchFastCandidateDocIds(String keyword, boolean excludeDevDocs, int limit, boolean chunkSearch, boolean unitSearch) {
-        if (!chunkSearch && !unitSearch) {
-            return List.of();
-        }
+        boolean documentSearch = hasColumn("documents", "search_tsv");
         QueryTsExpressions tsExpressions = buildTsExpressions(keyword);
+        String lowered = keyword == null ? "" : keyword.toLowerCase();
+        String compactKeyword = compact(lowered);
+        String tightKeyword = tight(lowered);
+        List<String> tokenPatterns = buildTokenPatterns(keyword);
         AppProperties.Query queryConfig = appProperties.query();
         int scanLimit = Math.max(
                 positive(queryConfig.candidateScanBase(), 120),
@@ -340,8 +343,39 @@ public class QueryService {
                 .addValue("plainTsQuery", tsExpressions.plainQuery())
                 .addValue("orTsQuery", tsExpressions.anyQuery())
                 .addValue("scanLimit", scanLimit)
-                .addValue("limit", Math.max(10, limit));
+                .addValue("limit", Math.max(10, limit))
+                .addValue("pattern", "%" + lowered + "%")
+                .addValue("compactPattern", "%" + compactKeyword + "%")
+                .addValue("tightPattern", "%" + tightKeyword + "%");
+        for (int i = 0; i < tokenPatterns.size(); i++) {
+            params.addValue("tokenPattern" + i, tokenPatterns.get(i));
+        }
         List<String> branches = new ArrayList<>();
+        branches.add("""
+                (
+                    SELECT d.id AS doc_id, (
+                        """ + (documentSearch ? """
+                        ts_rank_cd(COALESCE(d.search_tsv, ''::tsvector), plainto_tsquery('simple', :plainTsQuery)) * 3.2 +
+                        ts_rank_cd(COALESCE(d.search_tsv, ''::tsvector), to_tsquery('simple', :orTsQuery)) * 1.6 +
+                        """ : "") + """
+                        CASE WHEN lower(COALESCE(d.title, '')) LIKE :pattern THEN 8.0 ELSE 0.0 END +
+                        CASE WHEN lower(COALESCE(d.source_filename, '')) LIKE :pattern THEN 8.0 ELSE 0.0 END +
+                        CASE WHEN lower(COALESCE(d.source_file, '')) LIKE :pattern THEN 6.0 ELSE 0.0 END +
+                        CASE WHEN lower(COALESCE(sf.relative_path, '')) LIKE :pattern THEN 8.0 ELSE 0.0 END +
+                        CASE WHEN lower(COALESCE(sf.file_path, '')) LIKE :pattern THEN 6.0 ELSE 0.0 END +
+                        CASE WHEN regexp_replace(lower(COALESCE(d.title, '')), '[[:space:][:punct:]]+', '', 'g') LIKE :tightPattern THEN 4.0 ELSE 0.0 END +
+                        CASE WHEN regexp_replace(lower(COALESCE(d.source_filename, '')), '[[:space:][:punct:]]+', '', 'g') LIKE :tightPattern THEN 4.0 ELSE 0.0 END +
+                        CASE WHEN regexp_replace(lower(COALESCE(sf.relative_path, '')), '[[:space:][:punct:]]+', '', 'g') LIKE :tightPattern THEN 4.0 ELSE 0.0 END
+                    ) AS score
+                    FROM documents d
+                    LEFT JOIN source_files sf ON sf.doc_id = d.id
+                    WHERE (:excludeDevDocs = false OR COALESCE(d.is_dev_doc, false) = false)
+                      AND (
+                          """ + documentCandidateCondition(documentSearch, tokenPatterns.size()) + """
+                      )
+                    LIMIT :scanLimit
+                )
+                """);
         if (unitSearch) {
             branches.add("""
                     (
@@ -383,6 +417,37 @@ public class QueryService {
                 LIMIT :limit
                 """;
         return jdbcTemplate.query(sql, params, (rs, rowNum) -> uuid(rs.getString("doc_id")));
+    }
+
+    private String documentCandidateCondition(boolean documentSearch, int tokenPatternCount) {
+        StringBuilder condition = new StringBuilder();
+        if (documentSearch) {
+            condition.append("COALESCE(d.search_tsv, ''::tsvector) @@ to_tsquery('simple', :orTsQuery)\n OR ");
+        }
+        condition.append("""
+                lower(COALESCE(d.title, '')) LIKE :pattern
+                OR lower(COALESCE(d.source_filename, '')) LIKE :pattern
+                OR lower(COALESCE(d.source_file, '')) LIKE :pattern
+                OR lower(COALESCE(sf.relative_path, '')) LIKE :pattern
+                OR lower(COALESCE(sf.file_path, '')) LIKE :pattern
+                OR regexp_replace(lower(COALESCE(d.title, '')), '[[:space:][:punct:]]+', '', 'g') LIKE :tightPattern
+                OR regexp_replace(lower(COALESCE(d.source_filename, '')), '[[:space:][:punct:]]+', '', 'g') LIKE :tightPattern
+                OR regexp_replace(lower(COALESCE(sf.relative_path, '')), '[[:space:][:punct:]]+', '', 'g') LIKE :tightPattern
+                """);
+        for (int i = 0; i < tokenPatternCount; i++) {
+            condition.append("""
+                    
+                    OR lower(COALESCE(d.title, '')) LIKE :tokenPattern""").append(i).append("""
+                    
+                    OR lower(COALESCE(d.source_filename, '')) LIKE :tokenPattern""").append(i).append("""
+                    
+                    OR lower(COALESCE(d.source_file, '')) LIKE :tokenPattern""").append(i).append("""
+                    
+                    OR lower(COALESCE(sf.relative_path, '')) LIKE :tokenPattern""").append(i).append("""
+                    
+                    OR lower(COALESCE(sf.file_path, '')) LIKE :tokenPattern""").append(i);
+        }
+        return condition.toString();
     }
 
     private List<QueryDtos.SearchItem> fetchKeywordKnowledgeUnitEvidence(
@@ -516,15 +581,32 @@ public class QueryService {
         );
     }
 
-    private List<QueryDtos.SearchItem> fallbackDocumentKeywordSearch(String keyword, boolean excludeDevDocs, int limit) {
+    private List<QueryDtos.SearchItem> fetchKeywordDocumentEvidence(
+            String keyword,
+            boolean excludeDevDocs,
+            int limit,
+            List<UUID> candidateDocIds
+    ) {
         if (keyword == null || keyword.isBlank()) {
             return List.of();
         }
+        if (candidateDocIds != null && candidateDocIds.isEmpty()) {
+            return List.of();
+        }
         List<String> tokenPatterns = buildTokenPatterns(keyword);
+        String lowered = keyword.toLowerCase();
+        String candidateFilter = candidateDocIds == null ? "" : "  AND d.id IN (:candidateDocIds)\n";
         StringBuilder matchBuilder = new StringBuilder("""
                 lower(COALESCE(d.title, '')) LIKE :pattern
                 OR lower(COALESCE(d.source_filename, '')) LIKE :pattern
+                OR lower(COALESCE(d.source_file, '')) LIKE :pattern
                 OR lower(COALESCE(sf.relative_path, '')) LIKE :pattern
+                OR lower(COALESCE(sf.file_path, '')) LIKE :pattern
+                OR regexp_replace(lower(COALESCE(d.title, '')), '[[:space:][:punct:]]+', '', 'g') LIKE :tightPattern
+                OR regexp_replace(lower(COALESCE(d.source_filename, '')), '[[:space:][:punct:]]+', '', 'g') LIKE :tightPattern
+                OR regexp_replace(lower(COALESCE(d.source_file, '')), '[[:space:][:punct:]]+', '', 'g') LIKE :tightPattern
+                OR regexp_replace(lower(COALESCE(sf.relative_path, '')), '[[:space:][:punct:]]+', '', 'g') LIKE :tightPattern
+                OR regexp_replace(lower(COALESCE(sf.file_path, '')), '[[:space:][:punct:]]+', '', 'g') LIKE :tightPattern
                 """);
         for (int i = 0; i < tokenPatterns.size(); i++) {
             matchBuilder.append("""
@@ -533,47 +615,80 @@ public class QueryService {
                     
                       OR lower(COALESCE(d.source_filename, '')) LIKE :tokenPattern""").append(i).append("""
                     
+                      OR lower(COALESCE(d.source_file, '')) LIKE :tokenPattern""").append(i).append("""
+                    
                       OR lower(COALESCE(sf.relative_path, '')) LIKE :tokenPattern""").append(i);
+            matchBuilder.append("""
+                    
+                      OR lower(COALESCE(sf.file_path, '')) LIKE :tokenPattern""").append(i);
         }
         String sql = """
-                SELECT
-                    'chunk' AS kind,
-                    'filename' AS match_type,
-                    0.6::double precision AS score,
-                    d.id AS doc_id,
-                    d.source_file,
-                    d.source_filename,
-                    sf.relative_path,
-                    NULL::uuid AS chunk_id,
-                    NULL::uuid AS unit_id,
-                    d.title AS doc_title,
-                    d.doc_type,
-                    COALESCE(d.is_dev_doc, false) AS is_dev_doc,
-                    COALESCE(d.doc_domain, 'business') AS doc_domain,
-                    d.title AS title,
-                    COALESCE((d.metadata_json->>'previewText'), '') AS content,
-                    NULL::int AS page_no,
-                    NULL::varchar AS source_span,
-                    NULL::varchar AS subject,
-                    NULL::varchar AS indicator,
-                    'keyword' AS tag
-                FROM documents d
-                LEFT JOIN source_files sf ON sf.doc_id = d.id
-                WHERE (:excludeDevDocs = false OR COALESCE(d.is_dev_doc, false) = false)
-                  AND (
-                      """ + matchBuilder + """
-                  )
-                ORDER BY d.updated_at DESC
+                WITH document_hits AS (
+                    SELECT DISTINCT ON (d.id)
+                        'document' AS kind,
+                        'filename' AS match_type,
+                        (
+                            CASE WHEN lower(COALESCE(d.title, '')) LIKE :pattern THEN 8.0 ELSE 0.0 END +
+                            CASE WHEN lower(COALESCE(d.source_filename, '')) LIKE :pattern THEN 8.0 ELSE 0.0 END +
+                            CASE WHEN lower(COALESCE(d.source_file, '')) LIKE :pattern THEN 6.0 ELSE 0.0 END +
+                            CASE WHEN lower(COALESCE(sf.relative_path, '')) LIKE :pattern THEN 8.0 ELSE 0.0 END +
+                            CASE WHEN lower(COALESCE(sf.file_path, '')) LIKE :pattern THEN 6.0 ELSE 0.0 END +
+                            CASE WHEN regexp_replace(lower(COALESCE(d.title, '')), '[[:space:][:punct:]]+', '', 'g') LIKE :tightPattern THEN 4.0 ELSE 0.0 END +
+                            CASE WHEN regexp_replace(lower(COALESCE(d.source_filename, '')), '[[:space:][:punct:]]+', '', 'g') LIKE :tightPattern THEN 4.0 ELSE 0.0 END +
+                            CASE WHEN regexp_replace(lower(COALESCE(d.source_file, '')), '[[:space:][:punct:]]+', '', 'g') LIKE :tightPattern THEN 3.0 ELSE 0.0 END +
+                            CASE WHEN regexp_replace(lower(COALESCE(sf.relative_path, '')), '[[:space:][:punct:]]+', '', 'g') LIKE :tightPattern THEN 4.0 ELSE 0.0 END +
+                            CASE WHEN regexp_replace(lower(COALESCE(sf.file_path, '')), '[[:space:][:punct:]]+', '', 'g') LIKE :tightPattern THEN 3.0 ELSE 0.0 END
+                        )::double precision AS score,
+                        d.id AS doc_id,
+                        d.source_file,
+                        d.source_filename,
+                        sf.relative_path,
+                        NULL::uuid AS chunk_id,
+                        NULL::uuid AS unit_id,
+                        d.title AS doc_title,
+                        d.doc_type,
+                        COALESCE(d.is_dev_doc, false) AS is_dev_doc,
+                        COALESCE(d.doc_domain, 'business') AS doc_domain,
+                        d.title AS title,
+                        COALESCE((d.metadata_json->>'previewText'), '') AS content,
+                        NULL::int AS page_no,
+                        NULL::varchar AS source_span,
+                        NULL::varchar AS subject,
+                        NULL::varchar AS indicator,
+                        'keyword' AS tag,
+                        d.updated_at
+                    FROM documents d
+                    LEFT JOIN source_files sf ON sf.doc_id = d.id
+                    WHERE (:excludeDevDocs = false OR COALESCE(d.is_dev_doc, false) = false)
+                """ + candidateFilter + """
+                      AND (
+                          """ + matchBuilder + """
+                      )
+                    ORDER BY d.id, score DESC, d.updated_at DESC NULLS LAST
+                )
+                SELECT kind, match_type, score, doc_id, source_file, source_filename, relative_path,
+                       chunk_id, unit_id, doc_title, doc_type, is_dev_doc, doc_domain, title, content,
+                       page_no, source_span, subject, indicator, tag
+                FROM document_hits
+                ORDER BY score DESC, updated_at DESC NULLS LAST
                 LIMIT :limit
                 """;
         MapSqlParameterSource params = new MapSqlParameterSource()
                 .addValue("excludeDevDocs", excludeDevDocs)
-                .addValue("pattern", "%" + keyword.toLowerCase() + "%")
+                .addValue("pattern", "%" + lowered + "%")
+                .addValue("tightPattern", "%" + tight(lowered) + "%")
                 .addValue("limit", limit);
+        if (candidateDocIds != null) {
+            params.addValue("candidateDocIds", candidateDocIds);
+        }
         for (int i = 0; i < tokenPatterns.size(); i++) {
             params.addValue("tokenPattern" + i, tokenPatterns.get(i));
         }
         return jdbcTemplate.query(sql, params, (rs, rowNum) -> mapSearchItem(rs, keyword));
+    }
+
+    private List<QueryDtos.SearchItem> fallbackDocumentKeywordSearch(String keyword, boolean excludeDevDocs, int limit) {
+        return fetchKeywordDocumentEvidence(keyword, excludeDevDocs, limit, null);
     }
 
     private List<QueryDtos.SearchItem> vectorSearch(String keyword, boolean excludeDevDocs, int limit, List<UUID> candidateDocIds) {
