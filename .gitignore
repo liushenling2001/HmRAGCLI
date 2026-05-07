@@ -1,0 +1,56 @@
+# Secrets and local runtime configuration
+.env
+.env.*
+!.env.example
+java-backend/application.yml
+java-backend/application-*.yml
+!java-backend/application.example.yml
+*.key
+*.pem
+*.p12
+*.jks
+
+# Java / Maven build outputs
+java-backend/target/
+target/
+*.class
+
+# Node / frontend dependencies and build outputs
+frontend/node_modules/
+frontend/dist/
+frontend/build/
+node_modules/
+dist/
+build/
+
+# Python runtime outputs
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.venv/
+venv/
+
+# Logs and temporary files
+*.log
+*.tmp
+*.temp
+tmp-test-source/
+test-output/
+
+# IDE / OS files
+.idea/
+.vscode/
+**/.claude/
+.DS_Store
+Thumbs.db
+
+# Local sample/import files
+/test/
+
+# Ad-hoc local test helpers
+TestHttp.java
+TestUrlConn.java
+TestHttp*.class
+TestUrlConn*.class

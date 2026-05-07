@@ -1,0 +1,165 @@
+server:
+  port: 8012
+  tomcat:
+    threads:
+      max: ${SERVER_TOMCAT_THREADS_MAX:200}
+      min-spare: ${SERVER_TOMCAT_THREADS_MIN_SPARE:20}
+    accept-count: ${SERVER_TOMCAT_ACCEPT_COUNT:100}
+    max-connections: ${SERVER_TOMCAT_MAX_CONNECTIONS:8192}
+    connection-timeout: ${SERVER_TOMCAT_CONNECTION_TIMEOUT:10s}
+
+spring:
+  mvc:
+    async:
+      request-timeout: ${SPRING_MVC_ASYNC_REQUEST_TIMEOUT:65s}
+  datasource:
+    url: jdbc:postgresql://${POSTGRES_HOST:localhost}:${POSTGRES_PORT:5432}/${POSTGRES_DB:hmrag}
+    username: ${POSTGRES_USER:postgres}
+    password: ${POSTGRES_PASSWORD:}
+    hikari:
+      connection-timeout: 5000
+      validation-timeout: 2000
+      initialization-fail-timeout: 10000
+      keepalive-time: 30000
+      data-source-properties:
+        connectTimeout: 5
+        socketTimeout: 20
+        cancelSignalTimeout: 5
+        tcpKeepAlive: true
+  sql:
+    init:
+      mode: always
+      continue-on-error: false
+      schema-locations: classpath:db/bootstrap/schema.sql
+  jpa:
+    open-in-view: false
+    hibernate:
+      ddl-auto: validate
+    properties:
+      hibernate:
+        jdbc:
+          time_zone: UTC
+        dialect: org.hibernate.dialect.PostgreSQLDialect
+
+management:
+  endpoints:
+    web:
+      exposure:
+        include: health,info
+
+hmrag:
+  ingest:
+    batch-size: 50
+    parse-timeout-seconds: 45
+    parse-max-chars: 20000
+    parse-executor-threads: ${HMRAG_PARSE_EXECUTOR_THREADS:2}
+    parse-executor-queue-capacity: ${HMRAG_PARSE_EXECUTOR_QUEUE_CAPACITY:16}
+    doc-conversion-enabled: false
+    soffice-path: ""
+    extract-target-ratio: ${HMRAG_EXTRACT_TARGET_RATIO:0.10}
+    extract-target-min: ${HMRAG_EXTRACT_TARGET_MIN:8}
+    extract-target-max-doc: ${HMRAG_EXTRACT_TARGET_MAX_DOC:60}
+    extract-target-max-pdf: ${HMRAG_EXTRACT_TARGET_MAX_PDF:80}
+    extract-target-max-default: ${HMRAG_EXTRACT_TARGET_MAX_DEFAULT:50}
+    overview-target-ratio: ${HMRAG_OVERVIEW_TARGET_RATIO:0.10}
+    overview-target-min: ${HMRAG_OVERVIEW_TARGET_MIN:8}
+    overview-target-max-doc: ${HMRAG_OVERVIEW_TARGET_MAX_DOC:50}
+    overview-target-max-pdf: ${HMRAG_OVERVIEW_TARGET_MAX_PDF:70}
+    overview-target-max-default: ${HMRAG_OVERVIEW_TARGET_MAX_DEFAULT:40}
+    parse-chunk-max-doc: ${HMRAG_PARSE_CHUNK_MAX_DOC:120}
+    parse-chunk-max-pdf: ${HMRAG_PARSE_CHUNK_MAX_PDF:140}
+    parse-chunk-max-default: ${HMRAG_PARSE_CHUNK_MAX_DEFAULT:100}
+  scan:
+    default-recursive: true
+  llm:
+    provider: ${HMRAG_LLM_PROVIDER:disabled}
+    base-url: ${HMRAG_LLM_BASE_URL:}
+    api-key: ${HMRAG_LLM_API_KEY:}
+    model: ${HMRAG_LLM_MODEL:}
+    connect-timeout-seconds: ${HMRAG_LLM_CONNECT_TIMEOUT_SECONDS:5}
+    request-timeout-seconds: ${HMRAG_LLM_REQUEST_TIMEOUT_SECONDS:60}
+    fail-on-error: ${HMRAG_LLM_FAIL_ON_ERROR:true}
+  embedding:
+    provider: ${HMRAG_EMBEDDING_PROVIDER:disabled}
+    base-url: ${HMRAG_EMBEDDING_BASE_URL:}
+    api-key: ${HMRAG_EMBEDDING_API_KEY:}
+    model: ${HMRAG_EMBEDDING_MODEL:}
+    connect-timeout-seconds: ${HMRAG_EMBEDDING_CONNECT_TIMEOUT_SECONDS:5}
+    request-timeout-seconds: ${HMRAG_EMBEDDING_REQUEST_TIMEOUT_SECONDS:60}
+    batch-size: ${HMRAG_EMBEDDING_BATCH_SIZE:16}
+    fallback-dimensions: ${HMRAG_EMBEDDING_FALLBACK_DIMENSIONS:32}
+    fail-on-error: ${HMRAG_EMBEDDING_FAIL_ON_ERROR:true}
+    vector-target-ratio: ${HMRAG_VECTOR_TARGET_RATIO:0.10}
+    vector-target-min-chunk: ${HMRAG_VECTOR_TARGET_MIN_CHUNK:8}
+    vector-target-min-unit: ${HMRAG_VECTOR_TARGET_MIN_UNIT:4}
+    vector-target-max-chunk-doc: ${HMRAG_VECTOR_TARGET_MAX_CHUNK_DOC:80}
+    vector-target-max-chunk-pdf: ${HMRAG_VECTOR_TARGET_MAX_CHUNK_PDF:120}
+    vector-target-max-chunk-default: ${HMRAG_VECTOR_TARGET_MAX_CHUNK_DEFAULT:70}
+    vector-target-max-unit-doc: ${HMRAG_VECTOR_TARGET_MAX_UNIT_DOC:40}
+    vector-target-max-unit-pdf: ${HMRAG_VECTOR_TARGET_MAX_UNIT_PDF:60}
+    vector-target-max-unit-default: ${HMRAG_VECTOR_TARGET_MAX_UNIT_DEFAULT:35}
+  query:
+    statement-timeout-seconds: ${HMRAG_QUERY_STATEMENT_TIMEOUT_SECONDS:15}
+    lock-timeout-seconds: ${HMRAG_QUERY_LOCK_TIMEOUT_SECONDS:3}
+    vector-timeout-seconds: ${HMRAG_QUERY_VECTOR_TIMEOUT_SECONDS:8}
+    async-task-timeout-seconds: ${HMRAG_QUERY_ASYNC_TASK_TIMEOUT_SECONDS:25}
+    executor-threads: ${HMRAG_QUERY_EXECUTOR_THREADS:4}
+    executor-queue-capacity: ${HMRAG_QUERY_EXECUTOR_QUEUE_CAPACITY:32}
+    keyword-limit-multiplier: ${HMRAG_QUERY_KEYWORD_LIMIT_MULTIPLIER:6}
+    keyword-limit-base: ${HMRAG_QUERY_KEYWORD_LIMIT_BASE:80}
+    vector-candidate-multiplier: ${HMRAG_QUERY_VECTOR_CANDIDATE_MULTIPLIER:3}
+    vector-candidate-base: ${HMRAG_QUERY_VECTOR_CANDIDATE_BASE:40}
+    vector-limit-multiplier: ${HMRAG_QUERY_VECTOR_LIMIT_MULTIPLIER:5}
+    vector-limit-base: ${HMRAG_QUERY_VECTOR_LIMIT_BASE:60}
+    candidate-doc-limit-base: ${HMRAG_QUERY_CANDIDATE_DOC_LIMIT_BASE:40}
+    candidate-doc-limit-divisor: ${HMRAG_QUERY_CANDIDATE_DOC_LIMIT_DIVISOR:2}
+    candidate-scan-multiplier: ${HMRAG_QUERY_CANDIDATE_SCAN_MULTIPLIER:8}
+    candidate-scan-base: ${HMRAG_QUERY_CANDIDATE_SCAN_BASE:120}
+    evidence-limit-base: ${HMRAG_QUERY_EVIDENCE_LIMIT_BASE:20}
+    fallback-limit-base: ${HMRAG_QUERY_FALLBACK_LIMIT_BASE:20}
+    vector-independent-knowledge-unit-scan-limit: ${HMRAG_QUERY_VECTOR_INDEPENDENT_KNOWLEDGE_UNIT_SCAN_LIMIT:400}
+    vector-independent-chunk-scan-limit: ${HMRAG_QUERY_VECTOR_INDEPENDENT_CHUNK_SCAN_LIMIT:600}
+  maintenance:
+    executor-threads: ${HMRAG_MAINTENANCE_EXECUTOR_THREADS:2}
+    executor-queue-capacity: ${HMRAG_MAINTENANCE_EXECUTOR_QUEUE_CAPACITY:8}
+    request-timeout-seconds: ${HMRAG_MAINTENANCE_REQUEST_TIMEOUT_SECONDS:60}
+  domain-knowledge:
+    executor-threads: ${HMRAG_DOMAIN_KNOWLEDGE_EXECUTOR_THREADS:1}
+    executor-queue-capacity: ${HMRAG_DOMAIN_KNOWLEDGE_EXECUTOR_QUEUE_CAPACITY:8}
+    poll-delay-millis: ${HMRAG_DOMAIN_KNOWLEDGE_POLL_DELAY_MILLIS:3000}
+    auto-refresh-poll-delay-millis: ${HMRAG_DOMAIN_KNOWLEDGE_AUTO_REFRESH_POLL_DELAY_MILLIS:60000}
+    candidate-discovery-poll-delay-millis: ${HMRAG_DOMAIN_KNOWLEDGE_CANDIDATE_DISCOVERY_POLL_DELAY_MILLIS:600000}
+    candidate-discovery-enabled: ${HMRAG_DOMAIN_KNOWLEDGE_CANDIDATE_DISCOVERY_ENABLED:false}
+    candidate-discovery-window-start-hour: ${HMRAG_DOMAIN_KNOWLEDGE_CANDIDATE_DISCOVERY_WINDOW_START_HOUR:1}
+    candidate-discovery-window-end-hour: ${HMRAG_DOMAIN_KNOWLEDGE_CANDIDATE_DISCOVERY_WINDOW_END_HOUR:5}
+    candidate-discovery-lookback-hours: ${HMRAG_DOMAIN_KNOWLEDGE_CANDIDATE_DISCOVERY_LOOKBACK_HOURS:168}
+    candidate-discovery-max-documents: ${HMRAG_DOMAIN_KNOWLEDGE_CANDIDATE_DISCOVERY_MAX_DOCUMENTS:80}
+    candidate-discovery-max-candidates: ${HMRAG_DOMAIN_KNOWLEDGE_CANDIDATE_DISCOVERY_MAX_CANDIDATES:8}
+    candidate-discovery-min-documents: ${HMRAG_DOMAIN_KNOWLEDGE_CANDIDATE_DISCOVERY_MIN_DOCUMENTS:6}
+    candidate-discovery-min-hours-between-runs: ${HMRAG_DOMAIN_KNOWLEDGE_CANDIDATE_DISCOVERY_MIN_HOURS_BETWEEN_RUNS:12}
+    candidate-discovery-knowledge-unit-facet-limit: ${HMRAG_DOMAIN_KNOWLEDGE_CANDIDATE_DISCOVERY_KNOWLEDGE_UNIT_FACET_LIMIT:24}
+    candidate-discovery-chunk-topic-limit: ${HMRAG_DOMAIN_KNOWLEDGE_CANDIDATE_DISCOVERY_CHUNK_TOPIC_LIMIT:24}
+    candidate-discovery-slice-hours: ${HMRAG_DOMAIN_KNOWLEDGE_CANDIDATE_DISCOVERY_SLICE_HOURS:72}
+    stale-running-seconds: ${HMRAG_DOMAIN_KNOWLEDGE_STALE_RUNNING_SECONDS:300}
+    max-terms: ${HMRAG_DOMAIN_KNOWLEDGE_MAX_TERMS:8}
+    evidence-candidate-limit: ${HMRAG_DOMAIN_KNOWLEDGE_EVIDENCE_CANDIDATE_LIMIT:200}
+    evidence-final-limit: ${HMRAG_DOMAIN_KNOWLEDGE_EVIDENCE_FINAL_LIMIT:160}
+    evidence-per-document-soft-cap: ${HMRAG_DOMAIN_KNOWLEDGE_EVIDENCE_PER_DOCUMENT_SOFT_CAP:12}
+    evidence-per-document-hard-cap: ${HMRAG_DOMAIN_KNOWLEDGE_EVIDENCE_PER_DOCUMENT_HARD_CAP:48}
+    document-limit-per-term: ${HMRAG_DOMAIN_KNOWLEDGE_DOCUMENT_LIMIT_PER_TERM:4}
+    knowledge-unit-limit-per-term: ${HMRAG_DOMAIN_KNOWLEDGE_KNOWLEDGE_UNIT_LIMIT_PER_TERM:6}
+    chunk-limit-per-term: ${HMRAG_DOMAIN_KNOWLEDGE_CHUNK_LIMIT_PER_TERM:6}
+    snippet-chars: ${HMRAG_DOMAIN_KNOWLEDGE_SNIPPET_CHARS:240}
+    setup-assistant-max-completion-tokens: ${HMRAG_DOMAIN_KNOWLEDGE_SETUP_ASSISTANT_MAX_COMPLETION_TOKENS:384}
+    setup-assistant-enable-thinking: ${HMRAG_DOMAIN_KNOWLEDGE_SETUP_ASSISTANT_ENABLE_THINKING:false}
+    refinement-llm:
+      provider: ${HMRAG_DOMAIN_KNOWLEDGE_LLM_PROVIDER:disabled}
+      base-url: ${HMRAG_DOMAIN_KNOWLEDGE_LLM_BASE_URL:}
+      api-key: ${HMRAG_DOMAIN_KNOWLEDGE_LLM_API_KEY:}
+      model: ${HMRAG_DOMAIN_KNOWLEDGE_LLM_MODEL:}
+      connect-timeout-seconds: ${HMRAG_DOMAIN_KNOWLEDGE_LLM_CONNECT_TIMEOUT_SECONDS:5}
+      request-timeout-seconds: ${HMRAG_DOMAIN_KNOWLEDGE_LLM_REQUEST_TIMEOUT_SECONDS:120}
+      fail-on-error: ${HMRAG_DOMAIN_KNOWLEDGE_LLM_FAIL_ON_ERROR:true}
+      max-completion-tokens: ${HMRAG_DOMAIN_KNOWLEDGE_LLM_MAX_COMPLETION_TOKENS:${HMRAG_DOMAIN_KNOWLEDGE_SETUP_ASSISTANT_MAX_COMPLETION_TOKENS:38400}}
+      group-max-completion-tokens: ${HMRAG_DOMAIN_KNOWLEDGE_LLM_GROUP_MAX_COMPLETION_TOKENS:${HMRAG_DOMAIN_KNOWLEDGE_LLM_MAX_COMPLETION_TOKENS:${HMRAG_DOMAIN_KNOWLEDGE_SETUP_ASSISTANT_MAX_COMPLETION_TOKENS:38400}}}
+      term-plan-max-completion-tokens: ${HMRAG_DOMAIN_KNOWLEDGE_LLM_TERM_PLAN_MAX_COMPLETION_TOKENS:8192}
