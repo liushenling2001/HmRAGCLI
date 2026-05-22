@@ -154,12 +154,6 @@ public class EmbeddingService {
         if ("knowledge_unit".equals(target.kind())) {
             score += 0.5;
         }
-        String lowered = text.toLowerCase(Locale.ROOT);
-        for (String term : List.of("标准", "要求", "必须", "流程", "接口", "性能", "安全", "指标", "数据")) {
-            if (lowered.contains(term)) {
-                score += 0.45;
-            }
-        }
         return score;
     }
 

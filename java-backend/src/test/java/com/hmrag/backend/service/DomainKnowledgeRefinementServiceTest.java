@@ -351,7 +351,32 @@ class DomainKnowledgeRefinementServiceTest {
                 new AppProperties.Embedding("disabled", "", "", "", 1, 5, 1, 384, false, 0.0, 0, 0, 0, 0, 0, 0, 0, 0),
                 new AppProperties.Query(5, 1, 5, 5, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1),
                 new AppProperties.Maintenance(1, 1, 5),
-                new AppProperties.DomainKnowledge(1, 1, 3000, 60000, 600000, false, 1, 5, 168, 80, 8, 6, 12, 24, 24, 72, 300, 1, 200, 160, 12, 48, 1, 1, 1, 120, 384, false, refinementLlm)
+                new AppProperties.DomainKnowledge(1, 1, 3000, 60000, 600000, false, 1, 5, 168, 80, 8, 6, 12, 24, 24, 72, 300, 1, 200, 160, 12, 48, 1, 1, 1, 120, 384, false, refinementLlm),
+                new AppProperties.KnowledgeGraph(
+                        false,
+                        "neo4j-http",
+                        "",
+                        "neo4j",
+                        "",
+                        "",
+                        1,
+                        5,
+                        5000,
+                        1,
+                        600,
+                        6,
+                        120,
+                        80,
+                        new AppProperties.ExtractionLlm("disabled", "", "", "", 1, 5, true, 12000),
+                        new AppProperties.EntityFusion(
+                                true,
+                                "deterministic",
+                                true,
+                                2,
+                                50,
+                                new AppProperties.ExtractionLlm("disabled", "", "", "", 1, 5, false, 8000)
+                        )
+                )
         );
     }
 }

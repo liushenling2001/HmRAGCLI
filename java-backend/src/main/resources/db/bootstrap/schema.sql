@@ -284,6 +284,63 @@ CREATE TABLE IF NOT EXISTS domain_candidate_discovery_state (
     updated_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP
 );
 
+CREATE TABLE IF NOT EXISTS graph_build_jobs (
+    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    source_file_id UUID NOT NULL REFERENCES source_files(id) ON DELETE CASCADE,
+    doc_id UUID NOT NULL REFERENCES documents(id) ON DELETE CASCADE,
+    graph_batch_id UUID,
+    status VARCHAR(50) NOT NULL DEFAULT 'queued',
+    stage VARCHAR(80) NOT NULL DEFAULT 'queued',
+    trigger_source VARCHAR(50) NOT NULL DEFAULT 'ingest',
+    graph_store VARCHAR(50) NOT NULL DEFAULT 'neo4j-http',
+    graph_version VARCHAR(100),
+    extract_model VARCHAR(200),
+    fusion_model VARCHAR(200),
+    local_graph_json JSONB NOT NULL DEFAULT '{}'::jsonb,
+    output_summary_json JSONB NOT NULL DEFAULT '{}'::jsonb,
+    error_message TEXT,
+    heartbeat_at TIMESTAMPTZ,
+    started_at TIMESTAMPTZ,
+    finished_at TIMESTAMPTZ,
+    created_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    updated_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP
+);
+
+CREATE TABLE IF NOT EXISTS graph_sync_state (
+    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    source_file_id UUID NOT NULL UNIQUE REFERENCES source_files(id) ON DELETE CASCADE,
+    doc_id UUID NOT NULL REFERENCES documents(id) ON DELETE CASCADE,
+    graph_store VARCHAR(50) NOT NULL DEFAULT 'neo4j-http',
+    graph_version VARCHAR(100),
+    graph_document_key VARCHAR(200),
+    content_fingerprint VARCHAR(128),
+    status VARCHAR(50) NOT NULL DEFAULT 'pending',
+    last_build_job_id UUID REFERENCES graph_build_jobs(id) ON DELETE SET NULL,
+    last_built_at TIMESTAMPTZ,
+    error_message TEXT,
+    metadata_json JSONB NOT NULL DEFAULT '{}'::jsonb,
+    created_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    updated_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP
+);
+
+CREATE TABLE IF NOT EXISTS graph_fusion_jobs (
+    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    graph_batch_id UUID,
+    status VARCHAR(50) NOT NULL DEFAULT 'queued',
+    stage VARCHAR(80) NOT NULL DEFAULT 'queued',
+    trigger_source VARCHAR(50) NOT NULL DEFAULT 'manual',
+    fusion_mode VARCHAR(80) NOT NULL DEFAULT 'deterministic',
+    output_summary_json JSONB NOT NULL DEFAULT '{}'::jsonb,
+    error_message TEXT,
+    started_at TIMESTAMPTZ,
+    finished_at TIMESTAMPTZ,
+    created_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    updated_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP
+);
+
+ALTER TABLE graph_build_jobs
+    ADD COLUMN IF NOT EXISTS graph_batch_id UUID;
+
 ALTER TABLE source_files
     ADD COLUMN IF NOT EXISTS file_path VARCHAR(2000),
     ADD COLUMN IF NOT EXISTS relative_path VARCHAR(1000),
@@ -410,6 +467,20 @@ CREATE INDEX IF NOT EXISTS idx_domain_candidates_status ON domain_candidates(sta
 CREATE INDEX IF NOT EXISTS idx_domain_candidates_trigger_source ON domain_candidates(trigger_source);
 CREATE INDEX IF NOT EXISTS idx_domain_candidates_created_at ON domain_candidates(created_at DESC);
 CREATE INDEX IF NOT EXISTS idx_domain_candidate_discovery_state_last_run_at ON domain_candidate_discovery_state(last_run_at DESC);
+CREATE INDEX IF NOT EXISTS idx_graph_build_jobs_status_created_at ON graph_build_jobs(status, created_at ASC);
+CREATE INDEX IF NOT EXISTS idx_graph_build_jobs_source_file_id ON graph_build_jobs(source_file_id);
+CREATE INDEX IF NOT EXISTS idx_graph_build_jobs_doc_id ON graph_build_jobs(doc_id);
+CREATE INDEX IF NOT EXISTS idx_graph_build_jobs_graph_batch_id ON graph_build_jobs(graph_batch_id);
+CREATE UNIQUE INDEX IF NOT EXISTS uq_graph_build_jobs_source_file_active
+    ON graph_build_jobs(source_file_id)
+    WHERE status IN ('queued', 'running');
+CREATE INDEX IF NOT EXISTS idx_graph_sync_state_doc_id ON graph_sync_state(doc_id);
+CREATE INDEX IF NOT EXISTS idx_graph_sync_state_status ON graph_sync_state(status);
+CREATE INDEX IF NOT EXISTS idx_graph_fusion_jobs_status_created_at ON graph_fusion_jobs(status, created_at ASC);
+CREATE INDEX IF NOT EXISTS idx_graph_fusion_jobs_graph_batch_id ON graph_fusion_jobs(graph_batch_id);
+CREATE UNIQUE INDEX IF NOT EXISTS uq_graph_fusion_jobs_batch_active
+    ON graph_fusion_jobs(graph_batch_id)
+    WHERE graph_batch_id IS NOT NULL AND status IN ('queued', 'running');
 
 CREATE OR REPLACE FUNCTION hmrag_update_documents_search_tsv()
 RETURNS trigger

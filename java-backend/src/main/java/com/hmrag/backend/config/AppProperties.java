@@ -10,7 +10,8 @@ public record AppProperties(
         Embedding embedding,
         Query query,
         Maintenance maintenance,
-        DomainKnowledge domainKnowledge
+        DomainKnowledge domainKnowledge,
+        KnowledgeGraph knowledgeGraph
 ) {
 
     public record Ingest(
@@ -150,6 +151,48 @@ public record AppProperties(
             int maxCompletionTokens,
             int groupMaxCompletionTokens,
             int termPlanMaxCompletionTokens
+    ) {
+    }
+
+    public record KnowledgeGraph(
+            boolean enabled,
+            String storeProvider,
+            String storeBaseUrl,
+            String storeDatabase,
+            String storeUsername,
+            String storePassword,
+            int storeConnectTimeoutSeconds,
+            int storeRequestTimeoutSeconds,
+            int pollDelayMillis,
+            int batchSize,
+            int staleRunningSeconds,
+            int chunkBatchSize,
+            int maxChunksPerDocument,
+            int maxKnowledgeUnitsPerDocument,
+            ExtractionLlm extractionLlm,
+            EntityFusion entityFusion
+    ) {
+    }
+
+    public record ExtractionLlm(
+            String provider,
+            String baseUrl,
+            String apiKey,
+            String model,
+            int connectTimeoutSeconds,
+            int requestTimeoutSeconds,
+            boolean failOnError,
+            int maxCompletionTokens
+    ) {
+    }
+
+    public record EntityFusion(
+            boolean enabled,
+            String mode,
+            boolean createSameAsEdges,
+            int minNameLength,
+            int maxGroupSize,
+            ExtractionLlm fusionLlm
     ) {
     }
 }

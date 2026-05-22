@@ -77,4 +77,22 @@ public class QueryExecutionConfig {
         executor.initialize();
         return executor;
     }
+
+    @Bean(name = "knowledgeGraphTaskExecutor")
+    public AsyncTaskExecutor knowledgeGraphTaskExecutor(AppProperties appProperties) {
+        AppProperties.KnowledgeGraph knowledgeGraph = appProperties.knowledgeGraph();
+        int threads = Math.max(1, knowledgeGraph == null ? 1 : knowledgeGraph.batchSize());
+        int queueCapacity = Math.max(4, threads * 8);
+
+        ThreadPoolTaskExecutor executor = new ThreadPoolTaskExecutor();
+        executor.setThreadNamePrefix("hmrag-kg-");
+        executor.setCorePoolSize(threads);
+        executor.setMaxPoolSize(threads);
+        executor.setQueueCapacity(queueCapacity);
+        executor.setAllowCoreThreadTimeOut(false);
+        executor.setWaitForTasksToCompleteOnShutdown(false);
+        executor.setRejectedExecutionHandler(new ThreadPoolExecutor.AbortPolicy());
+        executor.initialize();
+        return executor;
+    }
 }

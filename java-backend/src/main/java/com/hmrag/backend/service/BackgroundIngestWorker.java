@@ -39,6 +39,7 @@ public class BackgroundIngestWorker {
     private final SourceFileRepository sourceFileRepository;
     private final DataSourceService dataSourceService;
     private final DocumentPipelineService documentPipelineService;
+    private final KnowledgeGraphBuildService knowledgeGraphBuildService;
     private final AsyncTaskExecutor ingestTaskExecutor;
     private final IngestTaskRegistry ingestTaskRegistry;
 
@@ -48,6 +49,7 @@ public class BackgroundIngestWorker {
             SourceFileRepository sourceFileRepository,
             DataSourceService dataSourceService,
             DocumentPipelineService documentPipelineService,
+            KnowledgeGraphBuildService knowledgeGraphBuildService,
             @Qualifier("ingestTaskExecutor") AsyncTaskExecutor ingestTaskExecutor,
             IngestTaskRegistry ingestTaskRegistry
     ) {
@@ -56,6 +58,7 @@ public class BackgroundIngestWorker {
         this.sourceFileRepository = sourceFileRepository;
         this.dataSourceService = dataSourceService;
         this.documentPipelineService = documentPipelineService;
+        this.knowledgeGraphBuildService = knowledgeGraphBuildService;
         this.ingestTaskExecutor = ingestTaskExecutor;
         this.ingestTaskRegistry = ingestTaskRegistry;
     }
@@ -234,7 +237,10 @@ public class BackgroundIngestWorker {
                 case "extract" -> {
                     documentPipelineService.materializeKnowledgeUnit(file, (completed, total) -> reportProgress(job, completed, total));
                 }
-                case "vector" -> documentPipelineService.materializeEmbeddings(file, (completed, total) -> reportProgress(job, completed, total));
+                case "vector" -> {
+                    documentPipelineService.materializeEmbeddings(file, (completed, total) -> reportProgress(job, completed, total));
+                    knowledgeGraphBuildService.enqueueAfterIndex(file);
+                }
                 default -> {
                 }
             }
