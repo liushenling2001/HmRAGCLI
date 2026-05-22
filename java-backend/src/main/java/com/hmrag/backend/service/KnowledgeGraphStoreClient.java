@@ -21,9 +21,12 @@ import java.util.Locale;
 import java.util.Map;
 import java.util.Objects;
 import java.util.UUID;
+import java.util.regex.Pattern;
 
 @Service
 public class KnowledgeGraphStoreClient {
+
+    private static final Pattern TOKEN_SPLITTER = Pattern.compile("[\\s,，。；;、！？!？/\\\\|()（）【】\\[\\]<>《》\"'“”]+");
 
     private final ObjectMapper objectMapper;
     private final AppProperties appProperties;
@@ -182,6 +185,91 @@ public class KnowledgeGraphStoreClient {
                 "chunks", intAt(row, 5),
                 "clusters", intAt(row, 6)
         );
+    }
+
+    public List<Map<String, Object>> searchFacts(String queryText, int limit) {
+        if (!isConfigured()) {
+            return List.of();
+        }
+        List<String> tokens = graphSearchTokens(queryText);
+        if (tokens.isEmpty()) {
+            return List.of();
+        }
+        int safeLimit = Math.max(1, Math.min(limit, 200));
+        JsonNode root = query("""
+                MATCH (subjectEntity:Entity)-[:HAS_STATE]->(subject:EntityState)-[:SUBJECT_OF]->(fact:Fact)-[:OBJECT_OF]->(object:EntityState)<-[:HAS_STATE]-(objectEntity:Entity)
+                OPTIONAL MATCH (fact)-[:SUPPORTED_BY]->(evidence:Evidence)
+                OPTIONAL MATCH (subjectEntity)-[:MEMBER_OF]->(subjectCluster:EntityCluster)
+                OPTIONAL MATCH (objectEntity)-[:MEMBER_OF]->(objectCluster:EntityCluster)
+                WITH subjectEntity, subject, fact, object, objectEntity, subjectCluster, objectCluster, collect(DISTINCT evidence) AS evidences,
+                     toLower(
+                         coalesce(subjectEntity.canonicalName, '') + ' ' +
+                         coalesce(subject.name, '') + ' ' +
+                         coalesce(subject.definition, '') + ' ' +
+                         coalesce(subjectCluster.canonicalName, '') + ' ' +
+                         coalesce(objectEntity.canonicalName, '') + ' ' +
+                         coalesce(object.name, '') + ' ' +
+                         coalesce(object.definition, '') + ' ' +
+                         coalesce(objectCluster.canonicalName, '') + ' ' +
+                         coalesce(fact.relationType, '') + ' ' +
+                         coalesce(fact.statement, '')
+                     ) AS haystack
+                WHERE any(token IN $tokens WHERE haystack CONTAINS token)
+                WITH subjectEntity, subject, fact, object, objectEntity, subjectCluster, objectCluster,
+                     [ev IN evidences WHERE ev IS NOT NULL][0] AS evidence,
+                     reduce(score = 0, token IN $tokens | score + CASE WHEN haystack CONTAINS token THEN 1 ELSE 0 END) AS tokenScore
+                RETURN
+                    fact.factKey AS factKey,
+                    coalesce(subjectCluster.canonicalName, subjectEntity.canonicalName, subject.name) AS subjectName,
+                    coalesce(subjectEntity.entityType, subject.entityType) AS subjectType,
+                    coalesce(objectCluster.canonicalName, objectEntity.canonicalName, object.name) AS objectName,
+                    coalesce(objectEntity.entityType, object.entityType) AS objectType,
+                    fact.relationType AS relationType,
+                    fact.statement AS statement,
+                    fact.confidence AS confidence,
+                    fact.validFrom AS validFrom,
+                    fact.validTo AS validTo,
+                    evidence.docId AS docId,
+                    evidence.chunkId AS chunkId,
+                    evidence.knowledgeUnitId AS knowledgeUnitId,
+                    evidence.sourceSpan AS sourceSpan,
+                    evidence.fusionBatchId AS fusionBatchId,
+                    tokenScore AS tokenScore,
+                    fact.updatedAt AS updatedAt
+                ORDER BY tokenScore DESC, updatedAt DESC
+                LIMIT $limit
+                """, Map.of("tokens", tokens, "limit", safeLimit));
+        List<Map<String, Object>> facts = new ArrayList<>();
+        JsonNode data = root.path("results").path(0).path("data");
+        if (!data.isArray()) {
+            return facts;
+        }
+        for (JsonNode rowNode : data) {
+            JsonNode row = rowNode.path("row");
+            if (!row.isArray() || row.size() < 17) {
+                continue;
+            }
+            Map<String, Object> fact = new LinkedHashMap<>();
+            fact.put("factKey", textAt(row, 0));
+            fact.put("subject", textAt(row, 1));
+            fact.put("subjectType", textAt(row, 2));
+            fact.put("object", textAt(row, 3));
+            fact.put("objectType", textAt(row, 4));
+            fact.put("relationType", textAt(row, 5));
+            fact.put("statement", textAt(row, 6));
+            fact.put("confidence", row.path(7).isNumber() ? row.path(7).asDouble() : 0.0d);
+            fact.put("validFrom", textAt(row, 8));
+            fact.put("validTo", textAt(row, 9));
+            fact.put("docId", textAt(row, 10));
+            fact.put("chunkId", textAt(row, 11));
+            fact.put("knowledgeUnitId", textAt(row, 12));
+            fact.put("sourceSpan", textAt(row, 13));
+            fact.put("fusionBatchId", textAt(row, 14));
+            fact.put("tokenScore", intAt(row, 15));
+            fact.put("updatedAt", textAt(row, 16));
+            facts.add(fact);
+        }
+        return facts;
     }
 
     public Map<String, Object> writeLocalGraph(Map<String, Object> localGraph) {
@@ -736,6 +824,28 @@ public class KnowledgeGraphStoreClient {
     private String normalize(String value) {
         String raw = value == null ? "" : value.trim().toLowerCase(Locale.ROOT);
         return Normalizer.normalize(raw, Normalizer.Form.NFKC).replaceAll("\\s+", "");
+    }
+
+    private List<String> graphSearchTokens(String queryText) {
+        String normalized = queryText == null ? "" : Normalizer.normalize(queryText.trim().toLowerCase(Locale.ROOT), Normalizer.Form.NFKC);
+        if (normalized.isBlank()) {
+            return List.of();
+        }
+        LinkedHashMap<String, Boolean> tokens = new LinkedHashMap<>();
+        for (String raw : TOKEN_SPLITTER.split(normalized)) {
+            String token = raw == null ? "" : raw.trim();
+            if (token.length() >= 2 && token.length() <= 48) {
+                tokens.put(token, true);
+            }
+        }
+        String compact = normalized.replaceAll("[\\p{Punct}\\p{IsPunctuation}\\s]+", "");
+        if (compact.length() >= 2 && compact.length() <= 64) {
+            tokens.put(compact, true);
+        }
+        if (tokens.isEmpty() && normalized.length() >= 2) {
+            tokens.put(normalized.substring(0, Math.min(normalized.length(), 64)), true);
+        }
+        return tokens.keySet().stream().limit(16).toList();
     }
 
     private String stringValue(Object value) {

@@ -31,6 +31,7 @@ import java.util.Map;
 import java.util.HashSet;
 import java.util.Set;
 import java.util.UUID;
+import java.util.stream.Collectors;
 
 @Service
 public class DomainKnowledgeCompilationService {
@@ -47,6 +48,7 @@ public class DomainKnowledgeCompilationService {
     private final DomainKnowledgeRefinementService domainKnowledgeRefinementService;
     private final DomainRefineJobProgressService domainRefineJobProgressService;
     private final EmbeddingService embeddingService;
+    private final KnowledgeGraphStoreClient knowledgeGraphStoreClient;
 
     public DomainKnowledgeCompilationService(
             DomainRefineJobRepository domainRefineJobRepository,
@@ -58,7 +60,8 @@ public class DomainKnowledgeCompilationService {
             AppProperties appProperties,
             DomainKnowledgeRefinementService domainKnowledgeRefinementService,
             DomainRefineJobProgressService domainRefineJobProgressService,
-            EmbeddingService embeddingService
+            EmbeddingService embeddingService,
+            KnowledgeGraphStoreClient knowledgeGraphStoreClient
     ) {
         this.domainRefineJobRepository = domainRefineJobRepository;
         this.domainDefinitionRepository = domainDefinitionRepository;
@@ -70,6 +73,7 @@ public class DomainKnowledgeCompilationService {
         this.domainKnowledgeRefinementService = domainKnowledgeRefinementService;
         this.domainRefineJobProgressService = domainRefineJobProgressService;
         this.embeddingService = embeddingService;
+        this.knowledgeGraphStoreClient = knowledgeGraphStoreClient;
     }
 
     @Transactional
@@ -479,6 +483,16 @@ public class DomainKnowledgeCompilationService {
                 includeDataSourceIds,
                 excludeDataSourceIds,
                 knowledgeUnits,
+                chunks
+        );
+        collectGraphEvidence(
+                jobId,
+                retrievalPlan,
+                excludedTerms,
+                excludedStats,
+                includeDataSourceIds,
+                excludeDataSourceIds,
+                docs,
                 chunks
         );
         backfillDocumentsFromEvidence(includeDataSourceIds, excludeDataSourceIds, docs, knowledgeUnits, chunks);
@@ -1183,6 +1197,162 @@ public class DomainKnowledgeCompilationService {
                     "reason", ex.getMessage() == null ? ex.getClass().getSimpleName() : ex.getMessage()
             ));
         }
+    }
+
+    private void collectGraphEvidence(
+            UUID jobId,
+            RetrievalPlan retrievalPlan,
+            List<String> excludedTerms,
+            Map<String, Integer> excludedStats,
+            List<UUID> includeIds,
+            List<UUID> excludeIds,
+            ScoreAccumulator docs,
+            ScoreAccumulator chunks
+    ) {
+        if (!knowledgeGraphStoreClient.isConfigured() || retrievalPlan == null || retrievalPlan.allTerms().isEmpty()) {
+            return;
+        }
+        String queryText = String.join(" ", retrievalPlan.allTerms());
+        try {
+            int graphLimit = Math.max(30, Math.min(evidenceCandidateLimit() * 2, 160));
+            markJobProgress(jobId, "collecting_graph_evidence", Map.of(
+                    "queryChars", queryText.length(),
+                    "graphLimit", graphLimit,
+                    "chunkCount", chunks.size()
+            ));
+            List<Map<String, Object>> facts = knowledgeGraphStoreClient.searchFacts(queryText, graphLimit);
+            if (facts.isEmpty()) {
+                markJobProgress(jobId, "collecting_graph_evidence", Map.of(
+                        "graphFactCount", 0,
+                        "chunkCount", chunks.size()
+                ));
+                return;
+            }
+            List<Map<String, Object>> graphChunks = filterExcludedItems(
+                    collectGraphFactChunks(facts, includeIds, excludeIds),
+                    excludedTerms,
+                    excludedStats
+            );
+            for (Map<String, Object> item : graphChunks) {
+                chunks.add((String) item.get("chunkId"), item, 1.45 * retrievalScore(item));
+            }
+            List<UUID> graphDocIds = graphChunks.stream()
+                    .map(item -> parseUuid(String.valueOf(item.get("docId"))))
+                    .filter(id -> id != null)
+                    .distinct()
+                    .toList();
+            for (Map<String, Object> item : collectDocumentsByIds(graphDocIds, includeIds, excludeIds)) {
+                docs.add((String) item.get("docId"), item, 0.9 * retrievalScore(item));
+            }
+            markJobProgress(jobId, "collecting_graph_evidence", Map.of(
+                    "graphFactCount", facts.size(),
+                    "graphEvidenceChunkCount", graphChunks.size(),
+                    "documentCount", docs.size(),
+                    "chunkCount", chunks.size()
+            ));
+        } catch (Exception ex) {
+            log.warn("Domain knowledge graph evidence skipped: jobId={}, error={}", jobId, ex.getMessage());
+            markJobProgress(jobId, "collecting_graph_evidence_skipped", Map.of(
+                    "reason", ex.getMessage() == null ? ex.getClass().getSimpleName() : ex.getMessage()
+            ));
+        }
+    }
+
+    private List<Map<String, Object>> collectGraphFactChunks(
+            List<Map<String, Object>> facts,
+            List<UUID> includeIds,
+            List<UUID> excludeIds
+    ) {
+        List<UUID> chunkIds = facts.stream()
+                .map(item -> parseUuid(trimToNull(item.get("chunkId"))))
+                .filter(id -> id != null)
+                .distinct()
+                .toList();
+        if (chunkIds.isEmpty()) {
+            return List.of();
+        }
+        Map<String, Map<String, Object>> chunkById = jdbcTemplate.query("""
+                SELECT c.id AS chunk_id,
+                       c.doc_id,
+                       c.chunk_no,
+                       c.title,
+                       c.page_no,
+                       c.content,
+                       d.source_file,
+                       d.source_filename
+                FROM chunks c
+                JOIN documents d ON d.id = c.doc_id
+                WHERE c.id IN (:chunkIds)
+                AND (
+                    :includeAll = true OR EXISTS (
+                        SELECT 1
+                        FROM source_files sf
+                        WHERE sf.file_path = d.source_file
+                          AND sf.data_source_id IN (:includeIds)
+                    )
+                )
+                AND (
+                    :excludeEmpty = true OR NOT EXISTS (
+                        SELECT 1
+                        FROM source_files sf
+                        WHERE sf.file_path = d.source_file
+                          AND sf.data_source_id IN (:excludeIds)
+                    )
+                )
+                """,
+                new MapSqlParameterSource()
+                        .addValue("chunkIds", chunkIds)
+                        .addValue("includeAll", includeIds.isEmpty())
+                        .addValue("includeIds", includeIds.isEmpty() ? List.of(UUID.randomUUID()) : includeIds)
+                        .addValue("excludeEmpty", excludeIds.isEmpty())
+                        .addValue("excludeIds", excludeIds.isEmpty() ? List.of(UUID.randomUUID()) : excludeIds),
+                (rs, rowNum) -> {
+                    Map<String, Object> item = new LinkedHashMap<>();
+                    item.put("chunkId", rs.getObject("chunk_id", UUID.class).toString());
+                    item.put("docId", rs.getObject("doc_id", UUID.class).toString());
+                    item.put("chunkNo", rs.getInt("chunk_no"));
+                    item.put("title", rs.getString("title"));
+                    item.put("pageNo", rs.getObject("page_no"));
+                    item.put("_content_raw", rs.getString("content"));
+                    item.put("sourceFile", rs.getString("source_file"));
+                    item.put("sourceFilename", rs.getString("source_filename"));
+                    return item;
+                }).stream().collect(Collectors.toMap(
+                item -> String.valueOf(item.get("chunkId")),
+                item -> item,
+                (left, right) -> left,
+                LinkedHashMap::new
+        ));
+
+        List<Map<String, Object>> result = new ArrayList<>();
+        Set<String> seen = new HashSet<>();
+        for (Map<String, Object> fact : facts) {
+            String chunkId = trimToNull(fact.get("chunkId"));
+            if (chunkId == null || !seen.add(chunkId)) {
+                continue;
+            }
+            Map<String, Object> chunk = chunkById.get(chunkId);
+            if (chunk == null) {
+                continue;
+            }
+            Map<String, Object> item = new LinkedHashMap<>(chunk);
+            String relationType = firstNonBlank(trimToNull(fact.get("relationType")), "related_to");
+            String statement = trimToNull(fact.get("statement"));
+            String graphStatement = "图谱事实: "
+                    + firstNonBlank(trimToNull(fact.get("subject")), "未知实体")
+                    + " - " + relationType + " - "
+                    + firstNonBlank(trimToNull(fact.get("object")), "未知实体")
+                    + (statement == null ? "" : "。" + statement);
+            item.put("title", firstNonBlank(trimToNull(chunk.get("title")), "图谱事实"));
+            item.put("snippet", graphStatement);
+            item.put("_content_raw", graphStatement + "\n来源片段: " + firstNonBlank(trimToNull(chunk.get("_content_raw")), ""));
+            item.put("_score", 2.4d + retrievalScore(fact));
+            item.put("_retrieval", "graph_fact");
+            item.put("graphFactKey", fact.get("factKey"));
+            item.put("graphRelationType", relationType);
+            result.add(item);
+        }
+        return result;
     }
 
     private void collectDimensionEvidence(
@@ -2102,6 +2272,16 @@ public class DomainKnowledgeCompilationService {
             }
         }
         return ids;
+    }
+
+    private UUID parseUuid(String value) {
+        try {
+            return value == null || value.isBlank() || "null".equalsIgnoreCase(value) || "unknown".equalsIgnoreCase(value)
+                    ? null
+                    : UUID.fromString(value);
+        } catch (Exception ex) {
+            return null;
+        }
     }
 
     private String abbreviate(String text) {
@@ -3148,8 +3328,16 @@ public class DomainKnowledgeCompilationService {
             if (id == null || id.isBlank() || item == null || item.isEmpty()) {
                 return;
             }
-            items.putIfAbsent(id, item);
+            Map<String, Object> existing = items.get(id);
+            if (existing == null || prefersIncomingEvidence(existing, item)) {
+                items.put(id, item);
+            }
             scores.merge(id, score, Double::sum);
+        }
+
+        private boolean prefersIncomingEvidence(Map<String, Object> existing, Map<String, Object> incoming) {
+            return "graph_fact".equals(String.valueOf(incoming.get("_retrieval")))
+                    && !"graph_fact".equals(String.valueOf(existing.get("_retrieval")));
         }
 
         int size() {

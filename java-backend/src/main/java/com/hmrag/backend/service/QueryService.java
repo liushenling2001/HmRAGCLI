@@ -20,6 +20,7 @@ import java.nio.file.InvalidPathException;
 import java.nio.file.Path;
 import java.nio.file.Paths;
 import java.util.ArrayList;
+import java.util.Arrays;
 import java.util.Comparator;
 import java.util.LinkedHashMap;
 import java.util.LinkedHashSet;
@@ -37,9 +38,12 @@ import java.util.regex.Pattern;
 public class QueryService {
 
     private static final Logger log = LoggerFactory.getLogger(QueryService.class);
+    private static final Pattern SEARCH_TOKEN_SPLITTER = Pattern.compile("[\\s,，。；;、！？!？/\\\\|()（）]+");
+    private static final Pattern CJK_RUN = Pattern.compile("\\p{IsHan}{2,}");
 
     private final NamedParameterJdbcTemplate jdbcTemplate;
     private final EmbeddingService embeddingService;
+    private final KnowledgeGraphStoreClient knowledgeGraphStoreClient;
     private final ObjectMapper objectMapper;
     private final AppProperties appProperties;
     private final Executor queryTaskExecutor;
@@ -50,12 +54,14 @@ public class QueryService {
     public QueryService(
             NamedParameterJdbcTemplate jdbcTemplate,
             EmbeddingService embeddingService,
+            KnowledgeGraphStoreClient knowledgeGraphStoreClient,
             ObjectMapper objectMapper,
             AppProperties appProperties,
             @Qualifier("queryTaskExecutor") Executor queryTaskExecutor
     ) {
         this.jdbcTemplate = jdbcTemplate;
         this.embeddingService = embeddingService;
+        this.knowledgeGraphStoreClient = knowledgeGraphStoreClient;
         this.objectMapper = objectMapper;
         this.appProperties = appProperties;
         this.queryTaskExecutor = queryTaskExecutor;
@@ -113,7 +119,9 @@ public class QueryService {
         List<QueryDtos.SearchItem> vectorItems = normalizedKeyword.isBlank()
                 ? List.of()
                 : vectorSearchWithTimeout(normalizedKeyword, excludeDevDocs, vectorLimit, vectorCandidateDocIds);
-        List<QueryDtos.SearchItem> merged = merge(lexicalItems, vectorItems, normalizedKeyword, compactKeyword, tightKeyword);
+        List<QueryDtos.SearchItem> semanticItems = new ArrayList<>(vectorItems);
+        semanticItems.addAll(graphSearch(normalizedKeyword, excludeDevDocs, Math.max(20, safePageSize * 4)));
+        List<QueryDtos.SearchItem> merged = merge(lexicalItems, semanticItems, normalizedKeyword, compactKeyword, tightKeyword);
         List<QueryDtos.DocHit> allDocHits = aggregateDocHits(merged);
         int from = Math.min((safePage - 1) * safePageSize, allDocHits.size());
         int to = Math.min(from + safePageSize, allDocHits.size());
@@ -333,6 +341,9 @@ public class QueryService {
         String compactKeyword = compact(lowered);
         String tightKeyword = tight(lowered);
         List<String> tokenPatterns = buildTokenPatterns(keyword);
+        List<TextField> documentFields = documentTextFields();
+        List<TextField> knowledgeUnitFields = knowledgeUnitTextFields();
+        List<TextField> chunkFields = chunkTextFields();
         AppProperties.Query queryConfig = appProperties.query();
         int scanLimit = Math.max(
                 positive(queryConfig.candidateScanBase(), 120),
@@ -354,58 +365,63 @@ public class QueryService {
         branches.add("""
                 (
                     SELECT d.id AS doc_id, (
-                        """ + (documentSearch ? """
-                        ts_rank_cd(COALESCE(d.search_tsv, ''::tsvector), plainto_tsquery('simple', :plainTsQuery)) * 3.2 +
-                        ts_rank_cd(COALESCE(d.search_tsv, ''::tsvector), to_tsquery('simple', :orTsQuery)) * 1.6 +
-                        """ : "") + """
-                        CASE WHEN lower(COALESCE(d.title, '')) LIKE :pattern THEN 8.0 ELSE 0.0 END +
-                        CASE WHEN lower(COALESCE(d.source_filename, '')) LIKE :pattern THEN 8.0 ELSE 0.0 END +
-                        CASE WHEN lower(COALESCE(d.source_file, '')) LIKE :pattern THEN 6.0 ELSE 0.0 END +
-                        CASE WHEN lower(COALESCE(sf.relative_path, '')) LIKE :pattern THEN 8.0 ELSE 0.0 END +
-                        CASE WHEN lower(COALESCE(sf.file_path, '')) LIKE :pattern THEN 6.0 ELSE 0.0 END +
-                        CASE WHEN regexp_replace(lower(COALESCE(d.title, '')), '[[:space:][:punct:]]+', '', 'g') LIKE :tightPattern THEN 4.0 ELSE 0.0 END +
-                        CASE WHEN regexp_replace(lower(COALESCE(d.source_filename, '')), '[[:space:][:punct:]]+', '', 'g') LIKE :tightPattern THEN 4.0 ELSE 0.0 END +
-                        CASE WHEN regexp_replace(lower(COALESCE(sf.relative_path, '')), '[[:space:][:punct:]]+', '', 'g') LIKE :tightPattern THEN 4.0 ELSE 0.0 END
+                        """ + scoreSum(
+                        searchTsvRank("d", documentSearch, 3.2, 1.6),
+                        lexicalScore(documentFields, tokenPatterns.size())
+                ) + """
                     ) AS score
                     FROM documents d
                     LEFT JOIN source_files sf ON sf.doc_id = d.id
                     WHERE (:excludeDevDocs = false OR COALESCE(d.is_dev_doc, false) = false)
                       AND (
-                          """ + documentCandidateCondition(documentSearch, tokenPatterns.size()) + """
+                          """ + anyCondition(
+                        searchTsvCondition("d", documentSearch),
+                        lexicalCondition(documentFields, tokenPatterns.size())
+                ) + """
                       )
                     LIMIT :scanLimit
                 )
                 """);
-        if (unitSearch) {
-            branches.add("""
-                    (
-                        SELECT ku.doc_id, (
-                            ts_rank_cd(COALESCE(ku.search_tsv, ''::tsvector), plainto_tsquery('simple', :plainTsQuery)) * 2.0 +
-                            ts_rank_cd(COALESCE(ku.search_tsv, ''::tsvector), to_tsquery('simple', :orTsQuery)) * 1.2
-                        ) AS score
-                        FROM knowledge_units ku
-                        JOIN documents d ON d.id = ku.doc_id
-                        WHERE (:excludeDevDocs = false OR COALESCE(d.is_dev_doc, false) = false)
-                          AND COALESCE(ku.search_tsv, ''::tsvector) @@ to_tsquery('simple', :orTsQuery)
-                        LIMIT :scanLimit
-                    )
-                    """);
-        }
-        if (chunkSearch) {
-            branches.add("""
-                    (
-                        SELECT c.doc_id, (
-                            ts_rank_cd(COALESCE(c.search_tsv, ''::tsvector), plainto_tsquery('simple', :plainTsQuery)) * 1.8 +
-                            ts_rank_cd(COALESCE(c.search_tsv, ''::tsvector), to_tsquery('simple', :orTsQuery)) * 1.1
-                        ) AS score
-                        FROM chunks c
-                        JOIN documents d ON d.id = c.doc_id
-                        WHERE (:excludeDevDocs = false OR COALESCE(d.is_dev_doc, false) = false)
-                          AND COALESCE(c.search_tsv, ''::tsvector) @@ to_tsquery('simple', :orTsQuery)
-                        LIMIT :scanLimit
-                    )
-                    """);
-        }
+        branches.add("""
+                (
+                    SELECT ku.doc_id, (
+                        """ + scoreSum(
+                        searchTsvRank("ku", unitSearch, 2.0, 1.2),
+                        lexicalScore(knowledgeUnitFields, tokenPatterns.size())
+                ) + """
+                    ) AS score
+                    FROM knowledge_units ku
+                    JOIN documents d ON d.id = ku.doc_id
+                    WHERE (:excludeDevDocs = false OR COALESCE(d.is_dev_doc, false) = false)
+                      AND (
+                          """ + anyCondition(
+                        searchTsvCondition("ku", unitSearch),
+                        lexicalCondition(knowledgeUnitFields, tokenPatterns.size())
+                ) + """
+                      )
+                    LIMIT :scanLimit
+                )
+                """);
+        branches.add("""
+                (
+                    SELECT c.doc_id, (
+                        """ + scoreSum(
+                        searchTsvRank("c", chunkSearch, 1.8, 1.1),
+                        lexicalScore(chunkFields, tokenPatterns.size())
+                ) + """
+                    ) AS score
+                    FROM chunks c
+                    JOIN documents d ON d.id = c.doc_id
+                    WHERE (:excludeDevDocs = false OR COALESCE(d.is_dev_doc, false) = false)
+                      AND (
+                          """ + anyCondition(
+                        searchTsvCondition("c", chunkSearch),
+                        lexicalCondition(chunkFields, tokenPatterns.size())
+                ) + """
+                      )
+                    LIMIT :scanLimit
+                )
+                """);
         String sql = """
                 WITH doc_hits AS (
                 """ + String.join("\nUNION ALL\n", branches) + """
@@ -419,35 +435,108 @@ public class QueryService {
         return jdbcTemplate.query(sql, params, (rs, rowNum) -> uuid(rs.getString("doc_id")));
     }
 
-    private String documentCandidateCondition(boolean documentSearch, int tokenPatternCount) {
-        StringBuilder condition = new StringBuilder();
-        if (documentSearch) {
-            condition.append("COALESCE(d.search_tsv, ''::tsvector) @@ to_tsquery('simple', :orTsQuery)\n OR ");
+    private List<TextField> documentTextFields() {
+        return List.of(
+                new TextField("d.title", 8.0, 3.0, true),
+                new TextField("d.source_filename", 8.0, 3.0, true),
+                new TextField("d.source_file", 6.0, 2.0, true),
+                new TextField("sf.relative_path", 8.0, 3.0, true),
+                new TextField("sf.file_path", 6.0, 2.0, true)
+        );
+    }
+
+    private List<TextField> knowledgeUnitTextFields() {
+        return List.of(
+                new TextField("ku.title", 3.0, 1.6, true),
+                new TextField("ku.subject", 2.4, 1.3, true),
+                new TextField("ku.indicator", 2.0, 1.1, true),
+                new TextField("ku.normalized_text", 2.2, 1.2, false),
+                new TextField("ku.content", 2.4, 1.4, false)
+        );
+    }
+
+    private List<TextField> chunkTextFields() {
+        return List.of(
+                new TextField("c.title", 2.4, 1.4, true),
+                new TextField("c.content", 2.0, 1.2, false)
+        );
+    }
+
+    private String searchTsvCondition(String alias, boolean enabled) {
+        if (!enabled) {
+            return null;
         }
-        condition.append("""
-                lower(COALESCE(d.title, '')) LIKE :pattern
-                OR lower(COALESCE(d.source_filename, '')) LIKE :pattern
-                OR lower(COALESCE(d.source_file, '')) LIKE :pattern
-                OR lower(COALESCE(sf.relative_path, '')) LIKE :pattern
-                OR lower(COALESCE(sf.file_path, '')) LIKE :pattern
-                OR regexp_replace(lower(COALESCE(d.title, '')), '[[:space:][:punct:]]+', '', 'g') LIKE :tightPattern
-                OR regexp_replace(lower(COALESCE(d.source_filename, '')), '[[:space:][:punct:]]+', '', 'g') LIKE :tightPattern
-                OR regexp_replace(lower(COALESCE(sf.relative_path, '')), '[[:space:][:punct:]]+', '', 'g') LIKE :tightPattern
-                """);
+        return "COALESCE(" + alias + ".search_tsv, ''::tsvector) @@ to_tsquery('simple', :orTsQuery)";
+    }
+
+    private String searchTsvRank(String alias, boolean enabled, double plainWeight, double anyWeight) {
+        if (!enabled) {
+            return null;
+        }
+        return "ts_rank_cd(COALESCE(" + alias + ".search_tsv, ''::tsvector), plainto_tsquery('simple', :plainTsQuery)) * " + plainWeight
+                + " + ts_rank_cd(COALESCE(" + alias + ".search_tsv, ''::tsvector), to_tsquery('simple', :orTsQuery)) * " + anyWeight;
+    }
+
+    private String lexicalCondition(List<TextField> fields, int tokenPatternCount) {
+        List<String> conditions = new ArrayList<>();
+        for (TextField field : fields) {
+            conditions.add(likeCondition(field.expression(), ":pattern"));
+            if (field.tightMatch()) {
+                conditions.add(tightCondition(field.expression(), ":tightPattern"));
+            }
+        }
         for (int i = 0; i < tokenPatternCount; i++) {
-            condition.append("""
-                    
-                    OR lower(COALESCE(d.title, '')) LIKE :tokenPattern""").append(i).append("""
-                    
-                    OR lower(COALESCE(d.source_filename, '')) LIKE :tokenPattern""").append(i).append("""
-                    
-                    OR lower(COALESCE(d.source_file, '')) LIKE :tokenPattern""").append(i).append("""
-                    
-                    OR lower(COALESCE(sf.relative_path, '')) LIKE :tokenPattern""").append(i).append("""
-                    
-                    OR lower(COALESCE(sf.file_path, '')) LIKE :tokenPattern""").append(i);
+            for (TextField field : fields) {
+                conditions.add(likeCondition(field.expression(), ":tokenPattern" + i));
+            }
         }
-        return condition.toString();
+        return anyCondition(conditions.toArray(String[]::new));
+    }
+
+    private String lexicalScore(List<TextField> fields, int tokenPatternCount) {
+        List<String> scores = new ArrayList<>();
+        for (TextField field : fields) {
+            scores.add(likeScore(field.expression(), ":pattern", field.phraseWeight()));
+            if (field.tightMatch()) {
+                scores.add(tightScore(field.expression(), ":tightPattern", field.phraseWeight() * 0.5));
+            }
+        }
+        for (int i = 0; i < tokenPatternCount; i++) {
+            for (TextField field : fields) {
+                scores.add(likeScore(field.expression(), ":tokenPattern" + i, field.tokenWeight()));
+            }
+        }
+        return scoreSum(scores.toArray(String[]::new));
+    }
+
+    private String likeCondition(String expression, String parameter) {
+        return "lower(COALESCE(" + expression + ", '')) LIKE " + parameter;
+    }
+
+    private String tightCondition(String expression, String parameter) {
+        return "regexp_replace(lower(COALESCE(" + expression + ", '')), '[[:space:][:punct:]]+', '', 'g') LIKE " + parameter;
+    }
+
+    private String likeScore(String expression, String parameter, double weight) {
+        return "CASE WHEN " + likeCondition(expression, parameter) + " THEN " + weight + " ELSE 0.0 END";
+    }
+
+    private String tightScore(String expression, String parameter, double weight) {
+        return "CASE WHEN " + tightCondition(expression, parameter) + " THEN " + weight + " ELSE 0.0 END";
+    }
+
+    private String anyCondition(String... expressions) {
+        List<String> enabled = Arrays.stream(expressions)
+                .filter(expr -> expr != null && !expr.isBlank() && !"false".equalsIgnoreCase(expr.trim()))
+                .toList();
+        return enabled.isEmpty() ? "false" : String.join("\nOR ", enabled);
+    }
+
+    private String scoreSum(String... expressions) {
+        List<String> enabled = Arrays.stream(expressions)
+                .filter(expr -> expr != null && !expr.isBlank() && !"0.0".equals(expr.trim()))
+                .toList();
+        return enabled.isEmpty() ? "0.0" : String.join("\n+ ", enabled);
     }
 
     private List<QueryDtos.SearchItem> fetchKeywordKnowledgeUnitEvidence(
@@ -457,23 +546,29 @@ public class QueryService {
             List<UUID> candidateDocIds,
             boolean unitSearch
     ) {
-        if (!unitSearch || candidateDocIds == null || candidateDocIds.isEmpty()) {
+        if (candidateDocIds == null || candidateDocIds.isEmpty()) {
             return List.of();
         }
         QueryTsExpressions tsExpressions = buildTsExpressions(keyword);
+        List<String> tokenPatterns = buildTokenPatterns(keyword);
+        List<TextField> fields = knowledgeUnitTextFields();
         String sql = """
                 SELECT
                     'knowledge_unit' AS kind,
                     CASE
                         WHEN lower(COALESCE(ku.title, '')) LIKE :pattern OR lower(COALESCE(d.title, '')) LIKE :pattern THEN 'title'
                         WHEN lower(COALESCE(d.source_filename, '')) LIKE :pattern OR lower(COALESCE(sf.relative_path, '')) LIKE :pattern THEN 'filename'
+                        WHEN lower(COALESCE(ku.content, '')) LIKE :pattern OR lower(COALESCE(ku.normalized_text, '')) LIKE :pattern THEN 'content'
                         ELSE 'fulltext'
                     END AS match_type,
                     (
-                        ts_rank_cd(COALESCE(ku.search_tsv, ''::tsvector), plainto_tsquery('simple', :plainTsQuery)) * 2.6 +
-                        ts_rank_cd(COALESCE(ku.search_tsv, ''::tsvector), to_tsquery('simple', :orTsQuery)) * 1.2 +
-                        CASE WHEN lower(COALESCE(ku.title, '')) LIKE :pattern THEN 0.7 ELSE 0.0 END +
-                        CASE WHEN lower(COALESCE(d.source_filename, '')) LIKE :pattern THEN 0.5 ELSE 0.0 END
+                        """ + scoreSum(
+                        searchTsvRank("ku", unitSearch, 2.6, 1.2),
+                        lexicalScore(fields, tokenPatterns.size()),
+                        "CASE WHEN lower(COALESCE(d.title, '')) LIKE :pattern THEN 0.7 ELSE 0.0 END",
+                        "CASE WHEN lower(COALESCE(d.source_filename, '')) LIKE :pattern THEN 0.5 ELSE 0.0 END",
+                        "CASE WHEN lower(COALESCE(sf.relative_path, '')) LIKE :pattern THEN 0.5 ELSE 0.0 END"
+                ) + """
                     ) AS score,
                     d.id AS doc_id,
                     d.source_file,
@@ -497,21 +592,19 @@ public class QueryService {
                 LEFT JOIN source_files sf ON sf.doc_id = d.id
                 WHERE (:excludeDevDocs = false OR COALESCE(d.is_dev_doc, false) = false)
                   AND d.id IN (:candidateDocIds)
-                  AND COALESCE(ku.search_tsv, ''::tsvector) @@ to_tsquery('simple', :orTsQuery)
+                  AND (
+                      """ + anyCondition(
+                        searchTsvCondition("ku", unitSearch),
+                        lexicalCondition(fields, tokenPatterns.size())
+                ) + """
+                  )
                 ORDER BY score DESC
                 LIMIT :limit
                 """;
-        return jdbcTemplate.query(
-                sql,
-                new MapSqlParameterSource()
-                        .addValue("excludeDevDocs", excludeDevDocs)
-                        .addValue("candidateDocIds", candidateDocIds)
-                        .addValue("plainTsQuery", tsExpressions.plainQuery())
-                        .addValue("orTsQuery", tsExpressions.anyQuery())
-                        .addValue("pattern", "%" + keyword.toLowerCase() + "%")
-                        .addValue("limit", limit),
-                (rs, rowNum) -> mapSearchItem(rs, keyword)
-        );
+        MapSqlParameterSource params = baseKeywordParams(keyword, excludeDevDocs, tsExpressions, tokenPatterns)
+                .addValue("candidateDocIds", candidateDocIds)
+                .addValue("limit", limit);
+        return jdbcTemplate.query(sql, params, (rs, rowNum) -> mapSearchItem(rs, keyword));
     }
 
     private List<QueryDtos.SearchItem> fetchKeywordChunkEvidence(
@@ -521,23 +614,29 @@ public class QueryService {
             List<UUID> candidateDocIds,
             boolean chunkSearch
     ) {
-        if (!chunkSearch || candidateDocIds == null || candidateDocIds.isEmpty()) {
+        if (candidateDocIds == null || candidateDocIds.isEmpty()) {
             return List.of();
         }
         QueryTsExpressions tsExpressions = buildTsExpressions(keyword);
+        List<String> tokenPatterns = buildTokenPatterns(keyword);
+        List<TextField> fields = chunkTextFields();
         String sql = """
                 SELECT
                     'chunk' AS kind,
                     CASE
                         WHEN lower(COALESCE(c.title, '')) LIKE :pattern OR lower(COALESCE(d.title, '')) LIKE :pattern THEN 'title'
                         WHEN lower(COALESCE(d.source_filename, '')) LIKE :pattern OR lower(COALESCE(sf.relative_path, '')) LIKE :pattern THEN 'filename'
+                        WHEN lower(COALESCE(c.content, '')) LIKE :pattern THEN 'content'
                         ELSE 'fulltext'
                     END AS match_type,
                     (
-                        ts_rank_cd(COALESCE(c.search_tsv, ''::tsvector), plainto_tsquery('simple', :plainTsQuery)) * 2.2 +
-                        ts_rank_cd(COALESCE(c.search_tsv, ''::tsvector), to_tsquery('simple', :orTsQuery)) * 1.0 +
-                        CASE WHEN lower(COALESCE(c.title, '')) LIKE :pattern THEN 0.6 ELSE 0.0 END +
-                        CASE WHEN lower(COALESCE(d.source_filename, '')) LIKE :pattern THEN 0.4 ELSE 0.0 END
+                        """ + scoreSum(
+                        searchTsvRank("c", chunkSearch, 2.2, 1.0),
+                        lexicalScore(fields, tokenPatterns.size()),
+                        "CASE WHEN lower(COALESCE(d.title, '')) LIKE :pattern THEN 0.6 ELSE 0.0 END",
+                        "CASE WHEN lower(COALESCE(d.source_filename, '')) LIKE :pattern THEN 0.4 ELSE 0.0 END",
+                        "CASE WHEN lower(COALESCE(sf.relative_path, '')) LIKE :pattern THEN 0.4 ELSE 0.0 END"
+                ) + """
                     ) AS score,
                     d.id AS doc_id,
                     d.source_file,
@@ -564,21 +663,19 @@ public class QueryService {
                 LEFT JOIN source_files sf ON sf.doc_id = d.id
                 WHERE (:excludeDevDocs = false OR COALESCE(d.is_dev_doc, false) = false)
                   AND d.id IN (:candidateDocIds)
-                  AND COALESCE(c.search_tsv, ''::tsvector) @@ to_tsquery('simple', :orTsQuery)
+                  AND (
+                      """ + anyCondition(
+                        searchTsvCondition("c", chunkSearch),
+                        lexicalCondition(fields, tokenPatterns.size())
+                ) + """
+                  )
                 ORDER BY score DESC
                 LIMIT :limit
                 """;
-        return jdbcTemplate.query(
-                sql,
-                new MapSqlParameterSource()
-                        .addValue("excludeDevDocs", excludeDevDocs)
-                        .addValue("candidateDocIds", candidateDocIds)
-                        .addValue("plainTsQuery", tsExpressions.plainQuery())
-                        .addValue("orTsQuery", tsExpressions.anyQuery())
-                        .addValue("pattern", "%" + keyword.toLowerCase() + "%")
-                        .addValue("limit", limit),
-                (rs, rowNum) -> mapSearchItem(rs, keyword)
-        );
+        MapSqlParameterSource params = baseKeywordParams(keyword, excludeDevDocs, tsExpressions, tokenPatterns)
+                .addValue("candidateDocIds", candidateDocIds)
+                .addValue("limit", limit);
+        return jdbcTemplate.query(sql, params, (rs, rowNum) -> mapSearchItem(rs, keyword));
     }
 
     private List<QueryDtos.SearchItem> fetchKeywordDocumentEvidence(
@@ -748,6 +845,176 @@ public class QueryService {
             log.warn("Vector search degraded to lexical-only: {}", ex.getMessage());
             return List.of();
         }
+    }
+
+    private List<QueryDtos.SearchItem> graphSearch(String keyword, boolean excludeDevDocs, int limit) {
+        if (keyword == null || keyword.isBlank() || !knowledgeGraphStoreClient.isConfigured()) {
+            return List.of();
+        }
+        try {
+            List<Map<String, Object>> facts = knowledgeGraphStoreClient.searchFacts(keyword, Math.max(limit * 2, limit));
+            if (facts.isEmpty()) {
+                return List.of();
+            }
+            return mapGraphFactsToSearchItems(keyword, facts, excludeDevDocs, limit);
+        } catch (Exception ex) {
+            log.warn("Knowledge graph search degraded: {}", ex.getMessage());
+            return List.of();
+        }
+    }
+
+    private List<QueryDtos.SearchItem> mapGraphFactsToSearchItems(
+            String keyword,
+            List<Map<String, Object>> facts,
+            boolean excludeDevDocs,
+            int limit
+    ) {
+        List<UUID> docIds = facts.stream()
+                .map(item -> tryUuid(stringValue(item.get("docId"))))
+                .filter(id -> id != null)
+                .distinct()
+                .toList();
+        List<UUID> chunkIds = facts.stream()
+                .map(item -> tryUuid(stringValue(item.get("chunkId"))))
+                .filter(id -> id != null)
+                .distinct()
+                .toList();
+        Map<String, Map<String, Object>> documents = loadGraphDocuments(docIds, excludeDevDocs);
+        Map<String, Map<String, Object>> chunks = loadGraphChunks(chunkIds);
+        List<QueryDtos.SearchItem> items = new ArrayList<>();
+        for (Map<String, Object> fact : facts) {
+            String docIdText = stringValue(fact.get("docId"));
+            String chunkIdText = stringValue(fact.get("chunkId"));
+            Map<String, Object> chunk = chunks.get(chunkIdText);
+            if ((docIdText == null || docIdText.isBlank()) && chunk != null) {
+                docIdText = stringValue(chunk.get("docId"));
+            }
+            Map<String, Object> document = documents.get(docIdText);
+            UUID docId = tryUuid(docIdText);
+            if (docId == null || document == null) {
+                continue;
+            }
+            UUID chunkId = tryUuid(chunkIdText);
+            String relationType = nullSafeString(fact.get("relationType"), "related_to");
+            String title = "图谱事实: " + nullSafeString(fact.get("subject"), "未知实体")
+                    + " - " + relationType + " - "
+                    + nullSafeString(fact.get("object"), "未知实体");
+            String statement = nullSafeString(fact.get("statement"), "");
+            String graphText = title + (statement.isBlank() ? "" : "。" + statement);
+            String chunkContent = chunk == null ? "" : nullSafeString(chunk.get("content"), "");
+            String content = chunkContent.isBlank()
+                    ? graphText
+                    : graphText + "\n来源片段: " + truncate(chunkContent.replaceAll("\\s+", " ").trim(), 260);
+            double confidence = numberValue(fact.get("confidence"));
+            double tokenScore = numberValue(fact.get("tokenScore"));
+            LinkedHashSet<String> tags = new LinkedHashSet<>();
+            tags.add("graph");
+            tags.add(relationType);
+            items.add(new QueryDtos.SearchItem(
+                    "graph_fact",
+                    "graph",
+                    4.2d + Math.min(3.0d, tokenScore) * 0.35d + Math.max(0.0d, confidence),
+                    docId,
+                    stringValue(document.get("sourceFile")),
+                    stringValue(document.get("sourceFilename")),
+                    stringValue(document.get("relativePath")),
+                    chunkId,
+                    tryUuid(stringValue(fact.get("knowledgeUnitId"))),
+                    stringValue(document.get("docTitle")),
+                    stringValue(document.get("docType")),
+                    Boolean.TRUE.equals(document.get("isDevDoc")),
+                    stringValue(document.get("docDomain")),
+                    title,
+                    content,
+                    snippet(keyword, content),
+                    intValue(chunk == null ? null : chunk.get("pageNo")),
+                    firstNonBlank(stringValue(fact.get("sourceSpan")), chunk == null ? null : stringValue(chunk.get("sourceSpan"))),
+                    stringValue(fact.get("subject")),
+                    relationType,
+                    new ArrayList<>(tags)
+            ));
+        }
+        return items.stream()
+                .sorted(Comparator.comparingDouble(QueryDtos.SearchItem::score).reversed())
+                .limit(Math.max(1, limit))
+                .toList();
+    }
+
+    private Map<String, Map<String, Object>> loadGraphDocuments(List<UUID> docIds, boolean excludeDevDocs) {
+        if (docIds == null || docIds.isEmpty()) {
+            return Map.of();
+        }
+        List<Map<String, Object>> rows = jdbcTemplate.query("""
+                SELECT d.id AS doc_id,
+                       d.source_file,
+                       d.source_filename,
+                       sf.relative_path,
+                       d.title AS doc_title,
+                       d.doc_type,
+                       COALESCE(d.is_dev_doc, false) AS is_dev_doc,
+                       COALESCE(d.doc_domain, 'business') AS doc_domain
+                FROM documents d
+                LEFT JOIN source_files sf ON sf.doc_id = d.id
+                WHERE d.id IN (:docIds)
+                  AND (:excludeDevDocs = false OR COALESCE(d.is_dev_doc, false) = false)
+                """,
+                new MapSqlParameterSource()
+                        .addValue("docIds", docIds)
+                        .addValue("excludeDevDocs", excludeDevDocs),
+                (rs, rowNum) -> {
+                    Map<String, Object> item = new LinkedHashMap<>();
+                    item.put("docId", rs.getObject("doc_id", UUID.class).toString());
+                    item.put("sourceFile", rs.getString("source_file"));
+                    item.put("sourceFilename", rs.getString("source_filename"));
+                    item.put("relativePath", rs.getString("relative_path"));
+                    item.put("docTitle", rs.getString("doc_title"));
+                    item.put("docType", rs.getString("doc_type"));
+                    item.put("isDevDoc", rs.getBoolean("is_dev_doc"));
+                    item.put("docDomain", rs.getString("doc_domain"));
+                    return item;
+                });
+        return rows.stream().collect(Collectors.toMap(
+                item -> String.valueOf(item.get("docId")),
+                item -> item,
+                (left, right) -> left,
+                LinkedHashMap::new
+        ));
+    }
+
+    private Map<String, Map<String, Object>> loadGraphChunks(List<UUID> chunkIds) {
+        if (chunkIds == null || chunkIds.isEmpty()) {
+            return Map.of();
+        }
+        List<Map<String, Object>> rows = jdbcTemplate.query("""
+                SELECT c.id AS chunk_id,
+                       c.doc_id,
+                       c.title,
+                       c.content,
+                       c.page_no,
+                       CASE
+                           WHEN c.start_offset IS NOT NULL OR c.end_offset IS NOT NULL THEN concat_ws('-', c.start_offset, c.end_offset)
+                           ELSE NULL
+                       END AS source_span
+                FROM chunks c
+                WHERE c.id IN (:chunkIds)
+                """,
+                new MapSqlParameterSource().addValue("chunkIds", chunkIds),
+                (rs, rowNum) -> {
+                    Map<String, Object> item = new LinkedHashMap<>();
+                    item.put("chunkId", rs.getObject("chunk_id", UUID.class).toString());
+                    item.put("docId", rs.getObject("doc_id", UUID.class).toString());
+                    item.put("title", rs.getString("title"));
+                    item.put("content", rs.getString("content"));
+                    item.put("pageNo", valueOrNull(rs, "page_no"));
+                    item.put("sourceSpan", rs.getString("source_span"));
+                    return item;
+                });
+        return rows.stream().collect(Collectors.toMap(
+                item -> String.valueOf(item.get("chunkId")),
+                item -> item,
+                (left, right) -> left,
+                LinkedHashMap::new
+        ));
     }
 
     private List<VectorRow> fetchVectorRows(
@@ -1119,6 +1386,42 @@ public class QueryService {
         return value == null ? null : String.valueOf(value);
     }
 
+    private String nullSafeString(Object value, String fallback) {
+        String text = stringValue(value);
+        return text == null || text.isBlank() ? fallback : text;
+    }
+
+    private String firstNonBlank(String... values) {
+        for (String value : values) {
+            if (value != null && !value.isBlank()) {
+                return value;
+            }
+        }
+        return null;
+    }
+
+    private double numberValue(Object value) {
+        if (value instanceof Number number) {
+            return number.doubleValue();
+        }
+        try {
+            return value == null ? 0.0d : Double.parseDouble(String.valueOf(value));
+        } catch (Exception ex) {
+            return 0.0d;
+        }
+    }
+
+    private Integer intValue(Object value) {
+        if (value instanceof Number number) {
+            return number.intValue();
+        }
+        try {
+            return value == null ? null : Integer.parseInt(String.valueOf(value));
+        } catch (Exception ex) {
+            return null;
+        }
+    }
+
     private List<String> stringList(Object value) {
         if (value instanceof List<?> list) {
             return list.stream().map(String::valueOf).toList();
@@ -1127,22 +1430,34 @@ public class QueryService {
     }
 
     private String key(QueryDtos.SearchItem item) {
+        if ("graph_fact".equals(item.kind())) {
+            String text = nullSafeString(item.title(), "") + "|" + nullSafeString(item.content(), "");
+            return item.kind() + ":" + Integer.toHexString(text.hashCode());
+        }
         UUID id = item.unitId() != null ? item.unitId() : item.chunkId();
-        return item.kind() + ":" + id;
+        return item.kind() + ":" + (id == null ? Integer.toHexString(nullSafeString(item.content(), "").hashCode()) : id);
     }
 
-    private MapSqlParameterSource params(String keyword, boolean excludeDevDocs) {
+    private MapSqlParameterSource baseKeywordParams(
+            String keyword,
+            boolean excludeDevDocs,
+            QueryTsExpressions tsExpressions,
+            List<String> tokenPatterns
+    ) {
         String lowered = keyword.toLowerCase();
         String compact = compact(lowered);
         String tight = tight(lowered);
-        boolean hasQuery = !keyword.isBlank();
-        return new MapSqlParameterSource()
+        MapSqlParameterSource params = new MapSqlParameterSource()
                 .addValue("pattern", "%" + lowered + "%")
                 .addValue("compactPattern", "%" + compact + "%")
                 .addValue("tightPattern", "%" + tight + "%")
-                .addValue("tsQuery", keyword)
-                .addValue("hasQuery", hasQuery)
+                .addValue("plainTsQuery", tsExpressions.plainQuery())
+                .addValue("orTsQuery", tsExpressions.anyQuery())
                 .addValue("excludeDevDocs", excludeDevDocs);
+        for (int i = 0; i < tokenPatterns.size(); i++) {
+            params.addValue("tokenPattern" + i, tokenPatterns.get(i));
+        }
+        return params;
     }
 
     private String compact(String text) {
@@ -1197,12 +1512,41 @@ public class QueryService {
         if (keyword == null || keyword.isBlank()) {
             return List.of();
         }
-        return List.of(keyword.trim().split("[\\s,，。；;、！？!？/\\\\|()（）]+")).stream()
-                .map(String::trim)
-                .filter(token -> !token.isBlank())
-                .distinct()
-                .limit(8)
-                .toList();
+        LinkedHashSet<String> tokens = new LinkedHashSet<>();
+        for (String raw : SEARCH_TOKEN_SPLITTER.split(keyword.trim())) {
+            String token = raw == null ? "" : raw.trim();
+            if (token.isBlank()) {
+                continue;
+            }
+            tokens.add(token);
+            addCjkSubTokens(tokens, token);
+            if (tokens.size() >= 12) {
+                break;
+            }
+        }
+        return tokens.stream().limit(12).toList();
+    }
+
+    private void addCjkSubTokens(Set<String> tokens, String token) {
+        var matcher = CJK_RUN.matcher(token);
+        while (matcher.find() && tokens.size() < 12) {
+            String run = matcher.group();
+            if (run.length() <= 4) {
+                addCjkWindows(tokens, run, 2);
+                continue;
+            }
+            addCjkWindows(tokens, run, 4);
+            addCjkWindows(tokens, run, 2);
+        }
+    }
+
+    private void addCjkWindows(Set<String> tokens, String text, int width) {
+        if (text.length() < width) {
+            return;
+        }
+        for (int i = 0; i + width <= text.length() && tokens.size() < 12; i++) {
+            tokens.add(text.substring(i, i + width));
+        }
     }
 
     private String quoteTsTerm(String token) {
@@ -1244,6 +1588,14 @@ public class QueryService {
 
     private UUID uuid(String raw) {
         return raw == null || raw.isBlank() ? null : UUID.fromString(raw);
+    }
+
+    private UUID tryUuid(String raw) {
+        try {
+            return raw == null || raw.isBlank() || "unknown".equalsIgnoreCase(raw) ? null : UUID.fromString(raw);
+        } catch (Exception ex) {
+            return null;
+        }
     }
 
     private String snippet(String keyword, String content) {
@@ -1404,6 +1756,9 @@ public class QueryService {
     }
 
     private record QueryTsExpressions(String plainQuery, String anyQuery) {
+    }
+
+    private record TextField(String expression, double phraseWeight, double tokenWeight, boolean tightMatch) {
     }
 
     private boolean isUnderRoot(Path filePath, String rootPathRaw) {
