@@ -10,6 +10,10 @@ HmRAGCLI is a local/offline RAG system with a Java backend, Vue operations UI, P
 - `docs/`: design notes, API notes, and generated architecture documents.
 - `scripts/`: helper scripts.
 
+## Knowledge Graph Direction
+
+The knowledge graph layer must keep candidate extraction, canonical facts, fusion, derived states, evidence, and frontend projection as separate, versioned layers. LLM output is stored as candidates first; `EntityState` is derived from validated facts, not from entity descriptions. Document titles, source filenames, import batch IDs, and chunk titles are source metadata by default. See `docs/knowledge-graph-evolution-upgrade-plan.md` for the recoverable pipeline design and `docs/knowledge-graph-evolution-implementation-tasks.md` for the staged implementation plan.
+
 ## Local Configuration
 
 Do not commit real runtime configuration. Use:

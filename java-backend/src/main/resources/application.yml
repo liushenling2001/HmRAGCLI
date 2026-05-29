@@ -176,7 +176,16 @@ hmrag:
     stale-running-seconds: ${HMRAG_KG_STALE_RUNNING_SECONDS:600}
     chunk-batch-size: ${HMRAG_KG_CHUNK_BATCH_SIZE:6}
     max-chunks-per-document: ${HMRAG_KG_MAX_CHUNKS_PER_DOCUMENT:120}
+    chunk-selection-enabled: ${HMRAG_KG_CHUNK_SELECTION_ENABLED:true}
+    min-chunk-chars: ${HMRAG_KG_MIN_CHUNK_CHARS:40}
+    min-selected-chunks-per-document: ${HMRAG_KG_MIN_SELECTED_CHUNKS_PER_DOCUMENT:12}
+    max-selected-chunks-per-document: ${HMRAG_KG_MAX_SELECTED_CHUNKS_PER_DOCUMENT:60}
     max-knowledge-units-per-document: ${HMRAG_KG_MAX_KNOWLEDGE_UNITS_PER_DOCUMENT:80}
+    extraction-profile: ${HMRAG_KG_EXTRACTION_PROFILE:auto}
+    project-profile-keywords: ${HMRAG_KG_PROJECT_PROFILE_KEYWORDS:项目,系统,平台,算法,建设,升级,应用}
+    policy-profile-keywords: ${HMRAG_KG_POLICY_PROFILE_KEYWORDS:制度,办法,规定,规程,条例,细则,规范}
+    speech-profile-keywords: ${HMRAG_KG_SPEECH_PROFILE_KEYWORDS:讲话,发言,会议,报告会,座谈}
+    report-profile-keywords: ${HMRAG_KG_REPORT_PROFILE_KEYWORDS:报告,总结,分析,统计,调研}
     extraction-llm:
       provider: ${HMRAG_KG_LLM_PROVIDER:disabled}
       base-url: ${HMRAG_KG_LLM_BASE_URL:}

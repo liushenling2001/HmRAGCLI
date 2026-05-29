@@ -1,0 +1,88 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Graph Quality</title>
+  <link rel="icon" href="/favicon.ico" />
+  <link rel="stylesheet" href="/ui/assets/graph-pipeline.css" />
+</head>
+<body>
+  <main class="shell">
+    <header class="topbar">
+      <div class="brand"><div class="eyebrow">Stage 7</div><h1>质量评估</h1></div>
+      <nav class="nav"><a href="/ui/graph-pipeline.html">流程总览</a><a href="/ui/graph.html">图谱浏览</a><a href="/ui/graph-extract.html">抽取任务</a></nav>
+    </header>
+    <div id="stageNav"></div>
+    <div id="notice" class="notice"></div>
+    <section class="metrics" id="metrics"></section>
+    <section class="grid two">
+      <div class="panel">
+        <div class="section-head"><h2>风险项</h2><span>优先看失败、候选积压、关系不足。</span></div>
+        <div id="risks" class="list"></div>
+      </div>
+      <div class="panel">
+        <div class="section-head"><h2>建议动作</h2><span>按阶段返回处理。</span></div>
+        <div id="actions" class="list"></div>
+      </div>
+    </section>
+  </main>
+  <script type="module">
+    import { API_BASE, buildQuery, escapeHtml, metric, request, showNotice, stageNav, summaryValue } from "/ui/assets/graph-pipeline.js";
+    const el = {
+      stageNav: document.getElementById("stageNav"),
+      notice: document.getElementById("notice"),
+      metrics: document.getElementById("metrics"),
+      risks: document.getElementById("risks"),
+      actions: document.getElementById("actions")
+    };
+    el.stageNav.innerHTML = stageNav("quality");
+    function card(title, detail, href, count) {
+      return `<a class="card" href="${href || "#"}" style="text-decoration:none;color:inherit;">
+        <div class="card-title"><strong>${escapeHtml(title)}</strong><span>${count == null ? "" : escapeHtml(String(count))}</span></div>
+        <div class="meta">${escapeHtml(detail || "")}</div>
+      </a>`;
+    }
+    function sampleList(title, rows, render) {
+      const list = Array.isArray(rows) ? rows : [];
+      if (!list.length) return "";
+      return `<div class="panel" style="margin-top:16px;">
+        <div class="section-head"><h2>${escapeHtml(title)}</h2><span>最多显示 30 条样本。</span></div>
+        <div class="list">${list.map(render).join("")}</div>
+      </div>`;
+    }
+    async function load() {
+      try {
+        const quality = await request(`${API_BASE}/quality`);
+        const m = quality.metrics || {};
+        el.metrics.innerHTML = [
+          metric("全局实体", m.entities ?? 0),
+          metric("关系事实", m.relationFacts ?? 0),
+          metric("属性事实", m.attributeFacts ?? 0),
+          metric("候选属性", m.attributeCandidates ?? 0),
+          metric("实体簇", m.entityClusters ?? 0),
+          metric("真实状态", m.realStates ?? 0),
+          metric("演化边", m.transitionEdges ?? 0),
+          metric("关系/实体", m.relationPerEntity ?? 0)
+        ].join("");
+        const risks = Array.isArray(quality.risks) ? quality.risks : [];
+        el.risks.innerHTML = risks.length
+          ? risks.map(r => card(r.title, r.detail, r.href, r.count)).join("")
+          : `<div class="empty">当前没有明显质量风险。</div>`;
+        const actions = Array.isArray(quality.actions) ? quality.actions : [];
+        el.actions.innerHTML = actions.map(a => card(a.label, a.reason, a.href)).join("");
+        const samples = quality.samples || {};
+        el.actions.insertAdjacentHTML("afterend", [
+          sampleList("结构噪声样本", samples.structureNoise, row => card(row.statement || "-", `置信度：${row.confidence ?? "-"}`, "/ui/graph-structure.html")),
+          sampleList("疑似低质量实体", samples.suspiciousEntities, row => card(row.name || "-", `${row.type || "-"} · 可融合：${row.fusionEligible ? "是" : "否"}`, "/ui/graph-local.html")),
+          sampleList("孤立实体样本", samples.isolatedEntities, row => card(row.name || "-", `${row.type || "-"} · ${row.fusionStatus || "-"}`, "/ui/graph.html")),
+          sampleList("关系类型分布", samples.relationsByType, row => card(row.relationType || "-", `${row.governanceStage || "原始抽取"} · ${row.count || 0} 条`, "/ui/graph.html"))
+        ].join(""));
+      } catch (error) {
+        showNotice(el.notice, `加载质量评估失败：${error.message || error}`, true);
+      }
+    }
+    load();
+  </script>
+</body>
+</html>

@@ -1,0 +1,917 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>HmRAGCLI Attribute Governance</title>
+  <link rel="icon" href="/favicon.ico" />
+  <link rel="stylesheet" href="/ui/assets/graph-pipeline.css" />
+  <style>
+    :root {
+      --bg: #f7f8fa;
+      --panel: #ffffff;
+      --panel-soft: #f2f4f7;
+      --border: #d8dee8;
+      --text: #172033;
+      --muted: #69758a;
+      --primary: #2563eb;
+      --success: #047857;
+      --warning: #b45309;
+      --error: #b91c1c;
+      --info-bg: #eff6ff;
+      --success-bg: #ecfdf5;
+      --warning-bg: #fffbeb;
+      --error-bg: #fef2f2;
+      --mono: "SF Mono", Consolas, "Liberation Mono", Menlo, monospace;
+      --font: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "PingFang SC", "Microsoft YaHei", Arial, sans-serif;
+    }
+
+    * { box-sizing: border-box; }
+
+    body {
+      margin: 0;
+      min-height: 100vh;
+      color: var(--text);
+      background: var(--bg);
+      font-family: var(--font);
+      font-size: 14px;
+      line-height: 1.6;
+    }
+
+    .shell {
+      width: min(1440px, calc(100% - 32px));
+      margin: 0 auto;
+      padding: 28px 0 40px;
+    }
+
+    .topbar {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 18px;
+      padding: 18px 0 22px;
+      border-bottom: 1px solid var(--border);
+    }
+
+    .brand { display: grid; gap: 4px; }
+
+    .eyebrow {
+      color: var(--muted);
+      font-size: 12px;
+      font-weight: 800;
+      letter-spacing: .12em;
+      text-transform: uppercase;
+    }
+
+    h1 {
+      margin: 0;
+      font-size: 28px;
+      font-weight: 760;
+      letter-spacing: 0;
+    }
+
+    h2, h3 {
+      margin: 0;
+      letter-spacing: 0;
+    }
+
+    .nav,
+    .actions,
+    .filters {
+      display: flex;
+      align-items: center;
+      flex-wrap: wrap;
+      gap: 10px;
+    }
+
+    .nav a,
+    button {
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      min-height: 36px;
+      padding: 0 13px;
+      border: 1px solid var(--border);
+      border-radius: 8px;
+      background: var(--panel);
+      color: var(--text);
+      text-decoration: none;
+      font: inherit;
+      font-weight: 800;
+      cursor: pointer;
+    }
+
+    button.primary {
+      border-color: #1f2937;
+      background: #172033;
+      color: #fff;
+    }
+
+    button:disabled {
+      cursor: not-allowed;
+      opacity: .56;
+    }
+
+    label {
+      display: grid;
+      gap: 6px;
+      min-width: 150px;
+      color: var(--muted);
+      font-size: 12px;
+      font-weight: 800;
+    }
+
+    input,
+    select {
+      min-height: 38px;
+      padding: 0 11px;
+      border: 1px solid var(--border);
+      border-radius: 8px;
+      background: var(--panel);
+      color: var(--text);
+      font: inherit;
+    }
+
+    .notice {
+      display: none;
+      margin: 16px 0;
+      padding: 12px 14px;
+      border: 1px solid var(--border);
+      border-radius: 8px;
+      background: var(--info-bg);
+      color: #1d4ed8;
+      white-space: pre-wrap;
+    }
+
+    .notice.error {
+      border-color: #fecaca;
+      background: var(--error-bg);
+      color: var(--error);
+    }
+
+    .summary {
+      display: grid;
+      grid-template-columns: repeat(6, minmax(120px, 1fr));
+      gap: 10px;
+      margin: 18px 0;
+    }
+
+    .metric,
+    .panel,
+    .cluster-card {
+      border: 1px solid var(--border);
+      border-radius: 8px;
+      background: var(--panel);
+    }
+
+    .guide {
+      display: grid;
+      grid-template-columns: repeat(3, minmax(0, 1fr));
+      gap: 10px;
+      margin: 16px 0;
+    }
+
+    .guide-card {
+      display: grid;
+      gap: 6px;
+      padding: 13px 14px;
+      border: 1px solid var(--border);
+      border-radius: 8px;
+      background: var(--panel);
+    }
+
+    .guide-card strong {
+      font-size: 14px;
+    }
+
+    .guide-card span {
+      color: var(--muted);
+      font-size: 12px;
+      font-weight: 700;
+    }
+
+    .metric {
+      padding: 13px 14px;
+    }
+
+    .metric span {
+      display: block;
+      color: var(--muted);
+      font-size: 12px;
+      font-weight: 800;
+    }
+
+    .metric strong {
+      display: block;
+      margin-top: 4px;
+      font-size: 24px;
+      line-height: 1.1;
+    }
+
+    .panel {
+      margin-top: 16px;
+      padding: 14px;
+    }
+
+    .section-head {
+      display: flex;
+      align-items: flex-start;
+      justify-content: space-between;
+      gap: 12px;
+      margin-bottom: 12px;
+    }
+
+    .section-head span {
+      color: var(--muted);
+      font-size: 12px;
+      font-weight: 700;
+      text-align: right;
+    }
+
+    .decision-tabs {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 8px;
+      margin: 12px 0;
+    }
+
+    .decision-tabs button {
+      min-height: 32px;
+      padding: 0 11px;
+      font-size: 12px;
+    }
+
+    .decision-tabs button.active {
+      border-color: #172033;
+      background: #172033;
+      color: #fff;
+    }
+
+    .layout {
+      display: grid;
+      grid-template-columns: minmax(0, 1fr) minmax(360px, .55fr);
+      gap: 14px;
+      align-items: start;
+    }
+
+    .cluster-list {
+      display: grid;
+      gap: 10px;
+      max-height: 760px;
+      overflow: auto;
+      padding-right: 4px;
+    }
+
+    .cluster-card {
+      display: grid;
+      gap: 10px;
+      padding: 12px;
+      cursor: pointer;
+    }
+
+    .cluster-card.active {
+      border-color: #172033;
+      box-shadow: 0 0 0 2px rgba(23, 32, 51, .08);
+    }
+
+    .cluster-head {
+      display: flex;
+      align-items: flex-start;
+      justify-content: space-between;
+      gap: 10px;
+    }
+
+    .cluster-title {
+      min-width: 0;
+      display: grid;
+      gap: 2px;
+    }
+
+    .cluster-title strong {
+      overflow: hidden;
+      text-overflow: ellipsis;
+      white-space: normal;
+      font-size: 15px;
+      line-height: 1.35;
+    }
+
+    .cluster-title span {
+      color: var(--muted);
+      font-size: 12px;
+      font-weight: 700;
+    }
+
+    .badge-row {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 6px;
+    }
+
+    .badge {
+      display: inline-flex;
+      align-items: center;
+      min-height: 24px;
+      padding: 0 8px;
+      border-radius: 999px;
+      background: var(--panel-soft);
+      color: var(--text);
+      font-size: 12px;
+      font-weight: 800;
+    }
+
+    .badge.attribute { background: var(--success-bg); color: var(--success); }
+    .badge.reject { background: var(--warning-bg); color: var(--warning); }
+    .badge.event { background: var(--error-bg); color: var(--error); }
+    .badge.keep { background: var(--info-bg); color: #1d4ed8; }
+
+    .kv-grid {
+      display: grid;
+      grid-template-columns: repeat(4, minmax(0, 1fr));
+      gap: 8px;
+    }
+
+    .kv {
+      padding: 8px;
+      border-radius: 8px;
+      background: var(--panel-soft);
+      min-width: 0;
+    }
+
+    .kv span {
+      display: block;
+      color: var(--muted);
+      font-size: 11px;
+      font-weight: 800;
+    }
+
+    .kv strong {
+      display: block;
+      overflow: hidden;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+      font-size: 13px;
+    }
+
+    .detail {
+      position: sticky;
+      top: 12px;
+      display: grid;
+      gap: 12px;
+      max-height: 820px;
+      overflow: auto;
+    }
+
+    .detail-block {
+      display: grid;
+      gap: 8px;
+      padding: 12px;
+      border: 1px solid var(--border);
+      border-radius: 8px;
+      background: #fff;
+    }
+
+    .detail-block h3 {
+      font-size: 15px;
+    }
+
+    .action-box {
+      display: grid;
+      gap: 8px;
+      padding: 12px;
+      border-radius: 8px;
+      background: var(--info-bg);
+      color: #1d4ed8;
+      font-weight: 800;
+    }
+
+    .action-box.reject {
+      background: var(--warning-bg);
+      color: var(--warning);
+    }
+
+    .action-box.event {
+      background: var(--error-bg);
+      color: var(--error);
+    }
+
+    .action-box.keep {
+      background: var(--panel-soft);
+      color: var(--muted);
+    }
+
+    .tech-key {
+      color: var(--muted);
+      font-family: var(--mono);
+      font-size: 11px;
+      word-break: break-all;
+    }
+
+    .sample-list {
+      display: grid;
+      gap: 8px;
+    }
+
+    .sample {
+      padding: 9px 10px;
+      border-radius: 8px;
+      background: var(--panel-soft);
+    }
+
+    .sample strong {
+      display: block;
+      font-size: 12px;
+    }
+
+    .sample span {
+      display: block;
+      color: var(--muted);
+      font-size: 12px;
+      word-break: break-word;
+    }
+
+    .empty {
+      padding: 20px;
+      border: 1px dashed var(--border);
+      border-radius: 8px;
+      background: var(--panel);
+      color: var(--muted);
+      text-align: center;
+      font-weight: 800;
+    }
+
+    @media (max-width: 980px) {
+      .topbar { align-items: flex-start; flex-direction: column; }
+      .summary { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+      .guide { grid-template-columns: 1fr; }
+      .layout { grid-template-columns: 1fr; }
+      .detail { position: static; max-height: none; }
+      .kv-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+    }
+  </style>
+</head>
+<body>
+  <main class="shell">
+    <header class="topbar">
+      <div class="brand">
+        <div class="eyebrow">HmRAGCLI</div>
+        <h1>属性治理工作台</h1>
+      </div>
+      <nav class="nav" aria-label="页面导航">
+        <a href="/">首页</a>
+        <a href="/ui/graph-pipeline.html">图谱流程</a>
+        <a href="/ui/graph-structure.html">下一步：结构增强</a>
+        <a href="/ui/graph.html">图谱浏览</a>
+        <a href="/ui/ops.html">运维台</a>
+      </nav>
+    </header>
+    <div id="stageNav"></div>
+
+    <section class="panel" aria-label="治理操作">
+      <div class="section-head">
+        <h2>候选属性簇</h2>
+        <span>系统先把海量候选聚成少量治理任务；人工看任务，不看单条候选。</span>
+      </div>
+      <div class="filters">
+        <label>
+          拉取簇数
+          <input id="limit" type="number" min="10" max="500" value="100" />
+        </label>
+        <label>
+          处理阈值
+          <input id="threshold" type="number" min="0" max="1" step="0.01" value="0.85" />
+        </label>
+        <label>
+          应用簇数
+          <input id="maxClusters" type="number" min="1" max="500" value="100" />
+        </label>
+        <div class="actions">
+          <button id="refreshBtn" type="button" class="primary">刷新建议</button>
+          <button id="dryRunBtn" type="button">预演处理</button>
+          <button id="applyBtn" type="button">应用高置信建议</button>
+        </div>
+      </div>
+    </section>
+
+    <div id="notice" class="notice"></div>
+
+    <section class="guide" aria-label="治理说明">
+      <div class="guide-card">
+        <strong>正式属性</strong>
+        <span>已正式归类或可提升为正式属性；包含 LLM 复核结果。</span>
+      </div>
+      <div class="guide-card">
+        <strong>建议移出</strong>
+        <span>字段列表、章节引用、表头说明等，不应污染属性池；证据仍保留。</span>
+      </div>
+      <div class="guide-card">
+        <strong>继续候选</strong>
+        <span>信号不足或模板缺失，暂不自动处理；后续可由模板或算法再次治理。</span>
+      </div>
+    </section>
+
+    <section class="summary" aria-label="治理统计">
+      <div class="metric"><span>建议簇</span><strong id="clusterCount">0</strong></div>
+      <div class="metric"><span>正式属性</span><strong id="attributeCount">0</strong></div>
+      <div class="metric"><span>建议移出</span><strong id="rejectCount">0</strong></div>
+      <div class="metric"><span>关系/事件</span><strong id="eventCount">0</strong></div>
+      <div class="metric"><span>继续候选</span><strong id="keepCount">0</strong></div>
+      <div class="metric"><span>覆盖事实</span><strong id="factCount">0</strong></div>
+    </section>
+
+    <section class="panel" aria-label="治理建议列表">
+      <div class="decision-tabs" id="decisionTabs"></div>
+      <div class="layout">
+        <div id="clusterList" class="cluster-list"><div class="empty">尚未加载治理建议。</div></div>
+        <aside class="detail" aria-label="建议详情">
+          <div class="detail-block">
+            <h3 id="detailTitle">未选择建议簇</h3>
+            <div id="detailMeta" class="badge-row"></div>
+          </div>
+          <div class="detail-block">
+            <h3>建议动作</h3>
+            <div id="detailReason" class="sample"><span>选择左侧建议簇后查看。</span></div>
+          </div>
+          <div class="detail-block">
+            <h3>影响范围</h3>
+            <div id="detailScope" class="kv-grid"></div>
+          </div>
+          <div class="detail-block">
+            <h3>样例值</h3>
+            <div id="detailValues" class="sample-list"><div class="empty">暂无</div></div>
+          </div>
+          <div class="detail-block">
+            <h3>证据样例</h3>
+            <div id="detailStatements" class="sample-list"><div class="empty">暂无</div></div>
+          </div>
+          <div class="detail-block">
+            <h3>技术标识</h3>
+            <div id="detailTechKey" class="tech-key">-</div>
+          </div>
+        </aside>
+      </div>
+    </section>
+  </main>
+
+  <script type="module">
+    import { stageNav } from "/ui/assets/graph-pipeline.js";
+
+    const API_BASE = "/api/v1/knowledge-graph";
+    const state = {
+      clusters: [],
+      selectedKey: "",
+      decision: "all",
+      loading: false
+    };
+
+    const el = {
+      limit: document.getElementById("limit"),
+      threshold: document.getElementById("threshold"),
+      maxClusters: document.getElementById("maxClusters"),
+      refreshBtn: document.getElementById("refreshBtn"),
+      dryRunBtn: document.getElementById("dryRunBtn"),
+      applyBtn: document.getElementById("applyBtn"),
+      stageNav: document.getElementById("stageNav"),
+      notice: document.getElementById("notice"),
+      clusterCount: document.getElementById("clusterCount"),
+      attributeCount: document.getElementById("attributeCount"),
+      rejectCount: document.getElementById("rejectCount"),
+      eventCount: document.getElementById("eventCount"),
+      keepCount: document.getElementById("keepCount"),
+      factCount: document.getElementById("factCount"),
+      decisionTabs: document.getElementById("decisionTabs"),
+      clusterList: document.getElementById("clusterList"),
+      detailTitle: document.getElementById("detailTitle"),
+      detailMeta: document.getElementById("detailMeta"),
+      detailReason: document.getElementById("detailReason"),
+      detailScope: document.getElementById("detailScope"),
+      detailValues: document.getElementById("detailValues"),
+      detailStatements: document.getElementById("detailStatements"),
+      detailTechKey: document.getElementById("detailTechKey")
+    };
+    el.stageNav.innerHTML = stageNav("attributes");
+
+    const decisionLabels = {
+      all: "全部",
+      attribute_fact: "正式属性",
+      discard_or_relation: "建议移出",
+      relation_or_event: "关系/事件",
+      keep_candidate: "继续候选"
+    };
+
+    const reasonLabels = {
+      field_list: "字段列表，不是某个实体自己的属性",
+      structure_reference: "章节结构引用，只表示同章出现，不表示属性",
+      action_predicate: "动作或事件表达，更适合保留为关系/事件",
+      template_alias_cluster: "命中实体类型模板，可提升为正式属性",
+      semantic_value_shape_cluster: "值形态与模板语义相符，可作为候选提升",
+      scalar_without_template: "像数值属性，但模板没有明确字段",
+      insufficient_template_signal: "模板信号不足，暂不自动处理",
+      value_entity_not_attribute_subject: "时间/数值本身不适合作为属性主体"
+    };
+
+    const shapeLabels = {
+      empty: "空值",
+      money: "金额/经费",
+      percent: "比例",
+      date: "日期/时间",
+      scalar: "数值",
+      short_text: "短文本",
+      long_text: "长文本"
+    };
+
+    const patternLabels = {
+      structure_reference: "章节引用",
+      field_list: "字段列表",
+      key_value: "键值表达",
+      copula: "判断/为",
+      free_text: "自由文本"
+    };
+
+    function buildQuery(params) {
+      const query = new URLSearchParams();
+      Object.entries(params).forEach(([key, value]) => {
+        if (value !== undefined && value !== null && String(value).trim() !== "") {
+          query.set(key, String(value).trim());
+        }
+      });
+      const text = query.toString();
+      return text ? `?${text}` : "";
+    }
+
+    async function request(url, options) {
+      const response = await fetch(url, {
+        headers: { "Accept": "application/json" },
+        ...options
+      });
+      if (!response.ok) {
+        const text = await response.text();
+        throw new Error(text || `HTTP ${response.status}`);
+      }
+      return response.json();
+    }
+
+    function escapeHtml(value) {
+      return String(value ?? "")
+        .replaceAll("&", "&amp;")
+        .replaceAll("<", "&lt;")
+        .replaceAll(">", "&gt;")
+        .replaceAll('"', "&quot;")
+        .replaceAll("'", "&#039;");
+    }
+
+    function numberValue(value) {
+      const number = Number(value ?? 0);
+      return Number.isFinite(number) ? number : 0;
+    }
+
+    function setBusy(isBusy) {
+      state.loading = isBusy;
+      el.refreshBtn.disabled = isBusy;
+      el.dryRunBtn.disabled = isBusy;
+      el.applyBtn.disabled = isBusy;
+      el.refreshBtn.textContent = isBusy ? "加载中..." : "刷新建议";
+    }
+
+    function showNotice(message, isError) {
+      el.notice.textContent = message;
+      el.notice.className = isError ? "notice error" : "notice";
+      el.notice.style.display = message ? "block" : "none";
+    }
+
+    function decisionClass(decision) {
+      if (decision === "attribute_fact") return "attribute";
+      if (decision === "discard_or_relation") return "reject";
+      if (decision === "relation_or_event") return "event";
+      return "keep";
+    }
+
+    function actionTitle(item) {
+      const type = item.entityType || "实体";
+      const predicate = item.predicate || "候选字段";
+      if (item.decision === "attribute_fact") {
+        if (Number(item.formalCount || 0) > 0) {
+          return `确认 ${type} 的「${predicate}」为正式属性「${item.targetAttributeKey || predicate}」`;
+        }
+        return `将 ${type} 的「${predicate}」提升为正式属性「${item.targetAttributeKey || predicate}」`;
+      }
+      if (item.decision === "discard_or_relation") {
+        return `将 ${type} 的「${predicate}」移出属性候选池`;
+      }
+      if (item.decision === "relation_or_event") {
+        return `把 ${type} 的「${predicate}」按关系/事件处理`;
+      }
+      return `继续观察 ${type} 的「${predicate}」`;
+    }
+
+    function actionDescription(item) {
+      const reason = reasonLabels[item.reason] || item.reason || "规则信号不足";
+      if (item.decision === "attribute_fact") {
+        const formalCount = Number(item.formalCount || 0);
+        const candidateCount = Number(item.candidateCount || 0);
+        if (formalCount > 0 && candidateCount === 0) {
+          return `${reason}。这是已正式归类属性，当前用于复核和质量检查。`;
+        }
+        return `${reason}。达到阈值后，可批量提升 ${candidateCount || item.factCount || 0} 条候选为正式属性。`;
+      }
+      if (item.decision === "discard_or_relation") {
+        return `${reason}。应用后会从活跃候选池移出，但原始事实和证据仍保留。`;
+      }
+      if (item.decision === "relation_or_event") {
+        return `${reason}。应用后不进入属性展示，后续可交给关系/事件治理。`;
+      }
+      return `${reason}。当前不建议自动处理，等模板或算法规则更明确后再治理。`;
+    }
+
+    function filteredClusters() {
+      if (state.decision === "all") return state.clusters;
+      return state.clusters.filter(item => item.decision === state.decision);
+    }
+
+    function renderSummary() {
+      const counts = state.clusters.reduce((acc, item) => {
+        acc.total += 1;
+        acc.facts += numberValue(item.factCount);
+        if (item.decision === "attribute_fact") acc.attribute += 1;
+        else if (item.decision === "discard_or_relation") acc.reject += 1;
+        else if (item.decision === "relation_or_event") acc.event += 1;
+        else acc.keep += 1;
+        return acc;
+      }, { total: 0, attribute: 0, reject: 0, event: 0, keep: 0, facts: 0 });
+      el.clusterCount.textContent = counts.total;
+      el.attributeCount.textContent = counts.attribute;
+      el.rejectCount.textContent = counts.reject;
+      el.eventCount.textContent = counts.event;
+      el.keepCount.textContent = counts.keep;
+      el.factCount.textContent = counts.facts;
+    }
+
+    function renderTabs() {
+      const keys = ["all", "attribute_fact", "discard_or_relation", "relation_or_event", "keep_candidate"];
+      el.decisionTabs.innerHTML = keys.map(key => {
+        const count = key === "all" ? state.clusters.length : state.clusters.filter(item => item.decision === key).length;
+        return `<button type="button" class="${state.decision === key ? "active" : ""}" data-decision="${escapeHtml(key)}">${escapeHtml(decisionLabels[key] || key)} · ${count}</button>`;
+      }).join("");
+    }
+
+    function renderClusterList() {
+      const items = filteredClusters();
+      if (!items.length) {
+        el.clusterList.innerHTML = `<div class="empty">当前筛选下没有建议簇。</div>`;
+        renderDetail(null);
+        return;
+      }
+      if (!items.some(item => item.clusterKey === state.selectedKey)) {
+        state.selectedKey = items[0].clusterKey || "";
+      }
+      el.clusterList.innerHTML = items.map(item => `
+        <article class="cluster-card${item.clusterKey === state.selectedKey ? " active" : ""}" data-cluster-key="${escapeHtml(item.clusterKey)}">
+          <div class="cluster-head">
+            <div class="cluster-title">
+              <strong>${escapeHtml(actionTitle(item))}</strong>
+              <span>${escapeHtml(actionDescription(item))}</span>
+            </div>
+            <span class="badge ${decisionClass(item.decision)}">${escapeHtml(decisionLabels[item.decision] || item.decision || "-")}</span>
+          </div>
+          <div class="badge-row">
+            <span class="badge">置信度 ${escapeHtml(Number(item.confidence || 0).toFixed(3))}</span>
+            <span class="badge">事实 ${escapeHtml(item.factCount ?? 0)}</span>
+            <span class="badge">实体 ${escapeHtml(item.entityCount ?? 0)}</span>
+            <span class="badge">文档 ${escapeHtml(item.documentCount ?? 0)}</span>
+            <span class="badge">${escapeHtml(shapeLabels[item.valueShape] || item.valueShape || "-")}</span>
+            <span class="badge">${escapeHtml(patternLabels[item.statementPattern] || item.statementPattern || "-")}</span>
+          </div>
+          <div class="kv-grid">
+            <div class="kv"><span>目标属性</span><strong>${escapeHtml(item.targetAttributeKey || "-")}</strong></div>
+            <div class="kv"><span>原因</span><strong>${escapeHtml(reasonLabels[item.reason] || item.reason || "-")}</strong></div>
+            <div class="kv"><span>样例值</span><strong>${escapeHtml((item.sampleValues || []).slice(0, 2).join(" / ") || "-")}</strong></div>
+            <div class="kv"><span>模式</span><strong>${escapeHtml(patternLabels[item.statementPattern] || item.statementPattern || "-")}</strong></div>
+          </div>
+        </article>
+      `).join("");
+      renderDetail(items.find(item => item.clusterKey === state.selectedKey) || items[0]);
+    }
+
+    function renderDetail(item) {
+      if (!item) {
+        el.detailTitle.textContent = "未选择建议簇";
+        el.detailMeta.innerHTML = "";
+        el.detailReason.innerHTML = `<span>选择左侧建议簇后查看。</span>`;
+        el.detailScope.innerHTML = "";
+        el.detailValues.innerHTML = `<div class="empty">暂无</div>`;
+        el.detailStatements.innerHTML = `<div class="empty">暂无</div>`;
+        el.detailTechKey.textContent = "-";
+        return;
+      }
+      el.detailTitle.textContent = `${item.entityType || "-"} · ${item.predicate || "-"}`;
+      el.detailMeta.innerHTML = `
+        <span class="badge ${decisionClass(item.decision)}">${escapeHtml(decisionLabels[item.decision] || item.decision || "-")}</span>
+        <span class="badge">置信度 ${escapeHtml(Number(item.confidence || 0).toFixed(3))}</span>
+        <span class="badge">事实 ${escapeHtml(item.factCount ?? 0)}</span>
+        <span class="badge">覆盖实体 ${escapeHtml(item.entityCount ?? 0)}</span>
+        <span class="badge">覆盖文档 ${escapeHtml(item.documentCount ?? 0)}</span>
+      `;
+      el.detailReason.innerHTML = `
+        <div class="action-box ${decisionClass(item.decision)}">
+          <strong>${escapeHtml(actionTitle(item))}</strong>
+          <span>${escapeHtml(actionDescription(item))}</span>
+        </div>
+      `;
+      el.detailScope.innerHTML = `
+        <div class="kv"><span>影响事实</span><strong>${escapeHtml(item.factCount ?? 0)}</strong></div>
+        <div class="kv"><span>覆盖实体</span><strong>${escapeHtml(item.entityCount ?? 0)}</strong></div>
+        <div class="kv"><span>覆盖文档</span><strong>${escapeHtml(item.documentCount ?? 0)}</strong></div>
+        <div class="kv"><span>目标属性</span><strong>${escapeHtml(item.targetAttributeKey || "-")}</strong></div>
+        <div class="kv"><span>值形态</span><strong>${escapeHtml(shapeLabels[item.valueShape] || item.valueShape || "-")}</strong></div>
+        <div class="kv"><span>语句模式</span><strong>${escapeHtml(patternLabels[item.statementPattern] || item.statementPattern || "-")}</strong></div>
+        <div class="kv"><span>置信度</span><strong>${escapeHtml(Number(item.confidence || 0).toFixed(3))}</strong></div>
+        <div class="kv"><span>处理类型</span><strong>${escapeHtml(decisionLabels[item.decision] || item.decision || "-")}</strong></div>
+      `;
+      el.detailValues.innerHTML = (item.sampleValues || []).length
+        ? item.sampleValues.map(value => `<div class="sample"><span>${escapeHtml(value)}</span></div>`).join("")
+        : `<div class="empty">暂无样例值</div>`;
+      el.detailStatements.innerHTML = (item.sampleStatements || []).length
+        ? item.sampleStatements.map(value => `<div class="sample"><span>${escapeHtml(value)}</span></div>`).join("")
+        : `<div class="empty">暂无样例语句</div>`;
+      el.detailTechKey.textContent = item.clusterKey || "-";
+    }
+
+    function render() {
+      renderSummary();
+      renderTabs();
+      renderClusterList();
+    }
+
+    async function loadClusters() {
+      if (state.loading) return;
+      setBusy(true);
+      showNotice("", false);
+      try {
+        const limit = Math.max(10, Math.min(Number(el.limit.value || 100), 500));
+        el.limit.value = String(limit);
+        const result = await request(`${API_BASE}/governance/attributes/candidate-clusters${buildQuery({ limit })}`);
+        state.clusters = Array.isArray(result.clusters) ? result.clusters : [];
+        const llm = result.llmGovernance || {};
+        if (llm.enabled) {
+          showNotice(`LLM 裁决已完成：模型 ${llm.model || "-"}，分批 ${llm.batchCount ?? 1} 批，审查 ${llm.reviewedClusters ?? 0} 个簇，修正 ${llm.changedClusters ?? 0} 个。`, false);
+        } else if (llm.reason || llm.error) {
+          showNotice(`LLM 裁决未启用：${llm.error || llm.reason}。当前展示规则治理建议。`, true);
+        }
+        if (!state.clusters.some(item => item.clusterKey === state.selectedKey)) {
+          state.selectedKey = state.clusters[0]?.clusterKey || "";
+        }
+        render();
+      } catch (error) {
+        showNotice(`读取治理建议失败：${error.message || error}`, true);
+      } finally {
+        setBusy(false);
+      }
+    }
+
+    async function applyClusters(dryRun) {
+      if (state.loading) return;
+      setBusy(true);
+      showNotice("", false);
+      try {
+        const minConfidence = Math.max(0, Math.min(Number(el.threshold.value || 0.85), 1));
+        const maxClusters = Math.max(1, Math.min(Number(el.maxClusters.value || 100), 500));
+        el.threshold.value = String(minConfidence);
+        el.maxClusters.value = String(maxClusters);
+        const result = await request(`${API_BASE}/governance/attributes/candidate-clusters/apply${buildQuery({ minConfidence, maxClusters, dryRun })}`, { method: "POST" });
+        const llm = result.llmGovernance || {};
+        const llmText = llm.enabled ? `LLM 已分批 ${llm.batchCount ?? 1} 批审查 ${llm.reviewedClusters ?? 0} 个簇，修正 ${llm.changedClusters ?? 0} 个。` : "";
+        const message = dryRun
+          ? `预演完成：将处理 ${result.selectedClusters ?? 0} 个簇，提升 ${result.promotedFacts ?? 0} 条，移出 ${result.rejectedCandidates ?? 0} 条。${llmText}`
+          : `应用完成：处理 ${result.selectedClusters ?? 0} 个簇，提升 ${result.promotedFacts ?? 0} 条，移出 ${result.rejectedCandidates ?? 0} 条。${llmText}`;
+        showNotice(message, false);
+        if (!dryRun) await loadClusters();
+      } catch (error) {
+        showNotice(`处理治理建议失败：${error.message || error}`, true);
+      } finally {
+        setBusy(false);
+      }
+    }
+
+    el.refreshBtn.addEventListener("click", loadClusters);
+    el.dryRunBtn.addEventListener("click", () => applyClusters(true));
+    el.applyBtn.addEventListener("click", () => {
+      const ok = window.confirm("确认按当前阈值应用高置信治理建议？正式属性会提升，噪声候选会从活跃候选池移出。");
+      if (ok) applyClusters(false);
+    });
+    el.decisionTabs.addEventListener("click", event => {
+      const button = event.target.closest("button[data-decision]");
+      if (!button) return;
+      state.decision = button.getAttribute("data-decision") || "all";
+      state.selectedKey = "";
+      render();
+    });
+    el.clusterList.addEventListener("click", event => {
+      const card = event.target.closest("[data-cluster-key]");
+      if (!card) return;
+      state.selectedKey = card.getAttribute("data-cluster-key") || "";
+      renderClusterList();
+    });
+
+    loadClusters();
+  </script>
+</body>
+</html>

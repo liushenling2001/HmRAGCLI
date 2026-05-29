@@ -4,6 +4,7 @@ import com.hmrag.backend.service.KnowledgeGraphBuildService;
 import org.springframework.web.bind.annotation.GetMapping;
 import org.springframework.web.bind.annotation.PathVariable;
 import org.springframework.web.bind.annotation.PostMapping;
+import org.springframework.web.bind.annotation.RequestBody;
 import org.springframework.web.bind.annotation.RequestMapping;
 import org.springframework.web.bind.annotation.RequestParam;
 import org.springframework.web.bind.annotation.RestController;
@@ -38,6 +39,37 @@ public class KnowledgeGraphController {
     @GetMapping("/stats")
     public Map<String, Object> graphStats() {
         return knowledgeGraphBuildService.graphStats();
+    }
+
+    @GetMapping("/quality")
+    public Map<String, Object> graphQuality() {
+        return knowledgeGraphBuildService.graphQuality();
+    }
+
+    @GetMapping("/entities")
+    public Map<String, Object> entityList(
+            @RequestParam(required = false) String search,
+            @RequestParam(defaultValue = "100") int limit
+    ) {
+        return knowledgeGraphBuildService.entityList(search, limit);
+    }
+
+    @GetMapping("/entities/{entityId}")
+    public Map<String, Object> entityDetail(
+            @PathVariable String entityId,
+            @RequestParam(defaultValue = "300") int connectionLimit
+    ) {
+        return knowledgeGraphBuildService.entityDetail(entityId, connectionLimit);
+    }
+
+    @GetMapping("/entity-type-templates")
+    public List<Map<String, Object>> listEntityTypeTemplates() {
+        return knowledgeGraphBuildService.listEntityTypeTemplates();
+    }
+
+    @PostMapping("/entity-type-templates")
+    public Map<String, Object> saveEntityTypeTemplates(@RequestBody List<Map<String, Object>> templates) {
+        return knowledgeGraphBuildService.saveEntityTypeTemplates(templates);
     }
 
     @PostMapping("/source-files/{sourceFileId}/rebuild")
@@ -76,5 +108,39 @@ public class KnowledgeGraphController {
     @PostMapping("/fusion-jobs/start")
     public Map<String, Object> startFusion(@RequestParam(required = false) UUID graphBatchId) {
         return knowledgeGraphBuildService.startFusion(graphBatchId);
+    }
+
+    @PostMapping("/governance/attributes/start")
+    public Map<String, Object> startAttributeGovernance() {
+        return knowledgeGraphBuildService.startAttributeGovernance();
+    }
+
+    @GetMapping("/governance/attributes/candidate-clusters")
+    public Map<String, Object> attributeCandidateClusters(@RequestParam(defaultValue = "100") int limit) {
+        return knowledgeGraphBuildService.attributeCandidateClusters(limit);
+    }
+
+    @PostMapping("/governance/attributes/candidate-clusters/apply")
+    public Map<String, Object> applyAttributeCandidateClusters(
+            @RequestParam(defaultValue = "0.85") double minConfidence,
+            @RequestParam(defaultValue = "100") int maxClusters,
+            @RequestParam(defaultValue = "false") boolean dryRun
+    ) {
+        return knowledgeGraphBuildService.applyAttributeCandidateClusters(minConfidence, maxClusters, dryRun);
+    }
+
+    @PostMapping("/governance/structure/start")
+    public Map<String, Object> startStructureEnhancement() {
+        return knowledgeGraphBuildService.startStructureEnhancement();
+    }
+
+    @PostMapping("/fusion-jobs/state/start")
+    public Map<String, Object> startStateFusion(@RequestParam(required = false) UUID graphBatchId) {
+        return knowledgeGraphBuildService.startStateFusion(graphBatchId);
+    }
+
+    @PostMapping("/fusion-jobs/transitions/start")
+    public Map<String, Object> startTransitionBuild(@RequestParam(required = false) UUID graphBatchId) {
+        return knowledgeGraphBuildService.startTransitionBuild(graphBatchId);
     }
 }

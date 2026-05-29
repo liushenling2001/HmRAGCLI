@@ -168,7 +168,16 @@ public record AppProperties(
             int staleRunningSeconds,
             int chunkBatchSize,
             int maxChunksPerDocument,
+            boolean chunkSelectionEnabled,
+            int minChunkChars,
+            int minSelectedChunksPerDocument,
+            int maxSelectedChunksPerDocument,
             int maxKnowledgeUnitsPerDocument,
+            String extractionProfile,
+            String projectProfileKeywords,
+            String policyProfileKeywords,
+            String speechProfileKeywords,
+            String reportProfileKeywords,
             ExtractionLlm extractionLlm,
             EntityFusion entityFusion
     ) {

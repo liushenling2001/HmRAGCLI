@@ -1,0 +1,104 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Graph Local Results</title>
+  <link rel="icon" href="/favicon.ico" />
+  <link rel="stylesheet" href="/ui/assets/graph-pipeline.css" />
+</head>
+<body>
+  <main class="shell">
+    <header class="topbar">
+      <div class="brand"><div class="eyebrow">Stage 2</div><h1>局部图谱结果</h1></div>
+      <nav class="nav"><a href="/ui/graph-pipeline.html">流程总览</a><a href="/ui/graph-extract.html">抽取任务</a><a href="/ui/graph-governance.html">下一步：属性治理</a></nav>
+    </header>
+    <div id="stageNav"></div>
+    <div id="notice" class="notice"></div>
+    <section class="metrics" id="metrics"></section>
+    <section class="panel">
+      <div class="section-head">
+        <h2>已完成抽取的文档</h2>
+        <span>这里不重新抽取，只检查每篇文档局部图谱是否有足够产出。</span>
+      </div>
+      <div class="filters">
+        <label>数量<input id="limit" type="number" min="1" max="500" value="100" /></label>
+        <div class="actions"><button id="refreshBtn" class="primary" type="button">刷新</button></div>
+      </div>
+      <div id="rows" class="list" style="margin-top:12px;"></div>
+    </section>
+  </main>
+  <script type="module">
+    import { API_BASE, buildQuery, escapeHtml, metric, request, showNotice, stageNav, summaryValue } from "/ui/assets/graph-pipeline.js";
+    const el = {
+      stageNav: document.getElementById("stageNav"),
+      notice: document.getElementById("notice"),
+      metrics: document.getElementById("metrics"),
+      limit: document.getElementById("limit"),
+      refreshBtn: document.getElementById("refreshBtn"),
+      rows: document.getElementById("rows")
+    };
+    el.stageNav.innerHTML = stageNav("local");
+
+    function num(summary, key) {
+      const value = Number(summaryValue(summary, key, 0));
+      return Number.isFinite(value) ? value : 0;
+    }
+
+    function card(job) {
+      const s = job.outputSummary || job.output_summary || {};
+      const chunks = num(s, "chunkCount");
+      const extracted = num(s, "extractedChunkCount");
+      const coverage = chunks ? Math.round(extracted * 100 / chunks) : 0;
+      return `<article class="card">
+        <div class="card-head">
+          <div class="card-title"><strong>${escapeHtml(job.sourceFilename || job.sourceFileId || job.id)}</strong><span>${escapeHtml(job.id || "")}</span></div>
+          <span class="badge success">${coverage}% 覆盖</span>
+        </div>
+        <div class="kv-grid">
+          <div class="kv"><span>总 chunk</span><strong>${chunks}</strong></div>
+          <div class="kv"><span>已抽取 chunk</span><strong>${extracted}</strong></div>
+          <div class="kv"><span>批次数</span><strong>${escapeHtml(summaryValue(s, "batchCount", "-"))}</strong></div>
+          <div class="kv"><span>失败批次</span><strong>${escapeHtml(summaryValue(s, "failedBatchCount", "-"))}</strong></div>
+          <div class="kv"><span>实体提及</span><strong>${escapeHtml(summaryValue(s, "entityMentions", "-"))}</strong></div>
+          <div class="kv"><span>事实数</span><strong>${escapeHtml(summaryValue(s, "facts", "-"))}</strong></div>
+          <div class="kv"><span>关系事实</span><strong>${escapeHtml(summaryValue(s, "relations", "-"))}</strong></div>
+          <div class="kv"><span>属性事实</span><strong>${escapeHtml(summaryValue(s, "attributeFacts", "-"))}</strong></div>
+        </div>
+      </article>`;
+    }
+
+    async function load() {
+      try {
+        const limit = Math.max(1, Math.min(Number(el.limit.value || 100), 500));
+        const jobs = await request(`${API_BASE}/build-jobs${buildQuery({ status: "success", limit })}`);
+        const rows = Array.isArray(jobs) ? jobs : [];
+        const totals = rows.reduce((acc, job) => {
+          const s = job.outputSummary || job.output_summary || {};
+          acc.chunks += num(s, "chunkCount");
+          acc.extracted += num(s, "extractedChunkCount");
+          acc.failedBatches += num(s, "failedBatchCount");
+          acc.entities += num(s, "entityMentions");
+          acc.facts += num(s, "facts");
+          acc.relations += num(s, "relations");
+          return acc;
+        }, { chunks: 0, extracted: 0, failedBatches: 0, entities: 0, facts: 0, relations: 0 });
+        el.metrics.innerHTML = [
+          metric("成功文档", rows.length),
+          metric("chunk 覆盖", `${totals.extracted}/${totals.chunks}`),
+          metric("失败批次", totals.failedBatches),
+          metric("实体提及", totals.entities),
+          metric("事实数", totals.facts),
+          metric("关系事实", totals.relations)
+        ].join("");
+        el.rows.innerHTML = rows.length ? rows.map(card).join("") : `<div class="empty">还没有成功的局部图谱结果。</div>`;
+      } catch (error) {
+        showNotice(el.notice, `加载局部结果失败：${error.message || error}`, true);
+      }
+    }
+    el.refreshBtn.addEventListener("click", load);
+    el.limit.addEventListener("change", load);
+    load();
+  </script>
+</body>
+</html>

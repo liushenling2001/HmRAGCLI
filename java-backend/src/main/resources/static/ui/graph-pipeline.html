@@ -1,0 +1,95 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>HmRAGCLI Graph Pipeline</title>
+  <link rel="icon" href="/favicon.ico" />
+  <link rel="stylesheet" href="/ui/assets/graph-pipeline.css" />
+</head>
+<body>
+  <main class="shell">
+    <header class="topbar">
+      <div class="brand">
+        <div class="eyebrow">HmRAGCLI</div>
+        <h1>图谱流水线工作台</h1>
+      </div>
+      <nav class="nav">
+        <a href="/">首页</a>
+        <a href="/ui/ops.html">运维台</a>
+        <a href="http://127.0.0.1:7474/browser/" target="_blank" rel="noreferrer">Neo4j</a>
+      </nav>
+    </header>
+    <div id="stageNav"></div>
+    <div id="notice" class="notice"></div>
+    <section class="metrics" id="metrics"></section>
+    <section class="panel">
+      <div class="section-head">
+        <h2>按阶段推进</h2>
+        <span>每个页面只处理一个阶段：动作、结果、下一步。</span>
+      </div>
+      <div class="grid" id="cards"></div>
+    </section>
+  </main>
+  <script type="module">
+    import { API_BASE, buildQuery, escapeHtml, metric, request, showNotice, stageNav, stages } from "/ui/assets/graph-pipeline.js";
+
+    const el = {
+      stageNav: document.getElementById("stageNav"),
+      notice: document.getElementById("notice"),
+      metrics: document.getElementById("metrics"),
+      cards: document.getElementById("cards")
+    };
+    el.stageNav.innerHTML = stageNav("overview");
+
+    function card(stage, subtitle) {
+      return `<a class="card" href="${stage.href}" style="text-decoration:none;color:inherit;">
+        <div class="card-head">
+          <div class="card-title">
+            <strong>${escapeHtml(stage.no)}. ${escapeHtml(stage.label)}</strong>
+            <span>${escapeHtml(subtitle)}</span>
+          </div>
+          <span class="badge info">进入</span>
+        </div>
+      </a>`;
+    }
+
+    async function load() {
+      try {
+        const [stats, jobs, fusionJobs] = await Promise.all([
+          request(`${API_BASE}/stats`),
+          request(`${API_BASE}/build-jobs${buildQuery({ limit: 200 })}`),
+          request(`${API_BASE}/fusion-jobs${buildQuery({ limit: 20 })}`)
+        ]);
+        const counts = jobs.reduce((acc, job) => {
+          const key = String(job.status || "unknown").toLowerCase();
+          acc[key] = (acc[key] || 0) + 1;
+          return acc;
+        }, {});
+        el.metrics.innerHTML = [
+          metric("抽取成功任务", counts.success || 0),
+          metric("运行/排队", (counts.running || 0) + (counts.queued || 0)),
+          metric("失败任务", counts.failed || 0),
+          metric("实体", stats.entities ?? 0),
+          metric("事实", stats.facts ?? 0),
+          metric("融合簇", stats.clusters ?? 0),
+          metric("融合任务", fusionJobs.length || 0)
+        ].join("");
+        const copy = {
+          extract: "提交、重跑、查看每篇文档抽取覆盖。",
+          local: "按任务查看局部图谱产出摘要。",
+          attributes: "治理属性候选，区分正式属性和候选池。",
+          structure: "用文档章节、chunk 关键词补弱关系。",
+          fusion: "跨文档同名融合、状态融合、演化链。",
+          view: "查看全局图、实体子图和实体详情。",
+          quality: "评估覆盖率、候选积压和风险。"
+        };
+        el.cards.innerHTML = stages.filter(stage => stage.key !== "overview").map(stage => card(stage, copy[stage.key] || "")).join("");
+      } catch (error) {
+        showNotice(el.notice, `加载流水线总览失败：${error.message || error}`, true);
+      }
+    }
+    load();
+  </script>
+</body>
+</html>
