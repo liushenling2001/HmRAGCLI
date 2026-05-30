@@ -1170,16 +1170,17 @@ public class DomainKnowledgeCompilationService {
                 return;
             }
             String literal = vectorLiteral(vector);
+            int dimensions = vector.size();
             int vectorLimit = Math.max(24, Math.min(evidenceCandidateLimit() / 2, 120));
             for (Map<String, Object> item : filterExcludedItems(
-                    collectVectorKnowledgeUnits(literal, includeIds, excludeIds, vectorLimit),
+                    collectVectorKnowledgeUnits(literal, dimensions, includeIds, excludeIds, vectorLimit),
                     excludedTerms,
                     excludedStats
             )) {
                 knowledgeUnits.add((String) item.get("knowledgeUnitId"), item, 1.35 * retrievalScore(item));
             }
             for (Map<String, Object> item : filterExcludedItems(
-                    collectVectorChunks(literal, includeIds, excludeIds, vectorLimit),
+                    collectVectorChunks(literal, dimensions, includeIds, excludeIds, vectorLimit),
                     excludedTerms,
                     excludedStats
             )) {
@@ -1189,6 +1190,7 @@ public class DomainKnowledgeCompilationService {
                     "queryChars", queryText.length(),
                     "knowledgeUnitCount", knowledgeUnits.size(),
                     "chunkCount", chunks.size(),
+                    "dimensions", dimensions,
                     "vectorLimit", vectorLimit
             ));
         } catch (Exception ex) {
@@ -1941,12 +1943,14 @@ public class DomainKnowledgeCompilationService {
 
     private List<Map<String, Object>> collectVectorKnowledgeUnits(
             String queryVectorLiteral,
+            int dimensions,
             List<UUID> includeIds,
             List<UUID> excludeIds,
             int limit
     ) {
         MapSqlParameterSource params = dataSourceParams(" ", includeIds, excludeIds)
                 .addValue("queryVector", queryVectorLiteral)
+                .addValue("dimensions", dimensions)
                 .addValue("limit", Math.max(1, limit));
         return jdbcTemplate.query("""
                 SELECT ku.id, ku.doc_id, ku.chunk_id, ku.title, ku.subject, ku.indicator, ku.content, ku.source_page,
@@ -1956,6 +1960,7 @@ public class DomainKnowledgeCompilationService {
                 JOIN knowledge_units ku ON ku.id = kue.knowledge_unit_id
                 JOIN documents d ON d.id = ku.doc_id
                 WHERE kue.embedding_vector IS NOT NULL
+                AND kue.dimensions = :dimensions
                 AND (
                     :includeAll = true OR EXISTS (
                         SELECT 1
@@ -1995,12 +2000,14 @@ public class DomainKnowledgeCompilationService {
 
     private List<Map<String, Object>> collectVectorChunks(
             String queryVectorLiteral,
+            int dimensions,
             List<UUID> includeIds,
             List<UUID> excludeIds,
             int limit
     ) {
         MapSqlParameterSource params = dataSourceParams(" ", includeIds, excludeIds)
                 .addValue("queryVector", queryVectorLiteral)
+                .addValue("dimensions", dimensions)
                 .addValue("limit", Math.max(1, limit));
         return jdbcTemplate.query("""
                 SELECT c.id, c.doc_id, c.chunk_no, c.title, c.page_no, c.content,
@@ -2010,6 +2017,7 @@ public class DomainKnowledgeCompilationService {
                 JOIN chunks c ON c.id = ce.chunk_id
                 JOIN documents d ON d.id = c.doc_id
                 WHERE ce.embedding_vector IS NOT NULL
+                AND ce.dimensions = :dimensions
                 AND (
                     :includeAll = true OR EXISTS (
                         SELECT 1

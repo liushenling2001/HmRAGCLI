@@ -22,6 +22,20 @@
     </header>
     <div id="stageNav"></div>
     <div id="notice" class="notice"></div>
+    <section class="panel">
+      <div class="section-head">
+        <h2>运行开关</h2>
+        <span>控制索引完成后的自动动作，避免大批量文件入库时直接压到图谱抽取。</span>
+      </div>
+      <div class="runtime-switch">
+        <label class="switch-row">
+          <input id="autoBuildAfterIndex" type="checkbox" />
+          <span class="switch-ui"></span>
+          <span><strong>入库完成后自动骨架构建</strong><small>关闭后只完成入库和索引，图谱任务从“抽取任务”页手动启动。</small></span>
+        </label>
+        <span id="autoBuildStatus" class="badge">读取中</span>
+      </div>
+    </section>
     <section class="metrics" id="metrics"></section>
     <section class="panel">
       <div class="section-head">
@@ -38,7 +52,9 @@
       stageNav: document.getElementById("stageNav"),
       notice: document.getElementById("notice"),
       metrics: document.getElementById("metrics"),
-      cards: document.getElementById("cards")
+      cards: document.getElementById("cards"),
+      autoBuildAfterIndex: document.getElementById("autoBuildAfterIndex"),
+      autoBuildStatus: document.getElementById("autoBuildStatus")
     };
     el.stageNav.innerHTML = stageNav("overview");
 
@@ -52,6 +68,38 @@
           <span class="badge info">进入</span>
         </div>
       </a>`;
+    }
+
+    function renderRuntimeSettings(settings) {
+      const enabled = Boolean(settings && settings.autoBuildAfterIndex);
+      el.autoBuildAfterIndex.checked = enabled;
+      el.autoBuildStatus.textContent = enabled ? "自动建图已开启" : "自动建图已关闭";
+      el.autoBuildStatus.className = enabled ? "badge success" : "badge warning";
+    }
+
+    async function loadRuntimeSettings() {
+      try {
+        renderRuntimeSettings(await request(`${API_BASE}/runtime-settings`));
+      } catch (error) {
+        el.autoBuildStatus.textContent = "读取失败";
+        el.autoBuildStatus.className = "badge error";
+        showNotice(el.notice, `读取自动建图开关失败：${error.message || error}`, true);
+      }
+    }
+
+    async function updateAutoBuildAfterIndex() {
+      const enabled = el.autoBuildAfterIndex.checked;
+      el.autoBuildAfterIndex.disabled = true;
+      try {
+        const settings = await request(`${API_BASE}/runtime-settings/auto-build-after-index${buildQuery({ enabled })}`, { method: "POST" });
+        renderRuntimeSettings(settings);
+        showNotice(el.notice, enabled ? "已开启自动骨架构建" : "已关闭自动骨架构建", false);
+      } catch (error) {
+        el.autoBuildAfterIndex.checked = !enabled;
+        showNotice(el.notice, `保存自动建图开关失败：${error.message || error}`, true);
+      } finally {
+        el.autoBuildAfterIndex.disabled = false;
+      }
     }
 
     async function load() {
@@ -89,6 +137,8 @@
         showNotice(el.notice, `加载流水线总览失败：${error.message || error}`, true);
       }
     }
+    el.autoBuildAfterIndex.addEventListener("change", updateAutoBuildAfterIndex);
+    loadRuntimeSettings();
     load();
   </script>
 </body>

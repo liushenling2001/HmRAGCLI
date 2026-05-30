@@ -185,6 +185,73 @@ select {
   font-weight: 700;
 }
 
+.runtime-switch {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  margin: 0 0 12px;
+  padding: 10px 12px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: var(--panel-soft);
+}
+
+.switch-row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  min-width: 0;
+  color: var(--text);
+  font-size: 13px;
+  font-weight: 800;
+}
+
+.switch-row input {
+  position: absolute;
+  opacity: 0;
+  pointer-events: none;
+}
+
+.switch-ui {
+  position: relative;
+  flex: 0 0 auto;
+  width: 42px;
+  height: 24px;
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  background: #cbd5e1;
+}
+
+.switch-ui::after {
+  content: "";
+  position: absolute;
+  top: 3px;
+  left: 3px;
+  width: 16px;
+  height: 16px;
+  border-radius: 999px;
+  background: #fff;
+  box-shadow: 0 1px 2px rgb(15 23 42 / 18%);
+  transition: transform .16s ease;
+}
+
+.switch-row input:checked + .switch-ui {
+  border-color: var(--success);
+  background: var(--success);
+}
+
+.switch-row input:checked + .switch-ui::after {
+  transform: translateX(18px);
+}
+
+.switch-row small {
+  display: block;
+  color: var(--muted);
+  font-size: 12px;
+  font-weight: 700;
+}
+
 .notice {
   display: none;
   margin: 16px 0;

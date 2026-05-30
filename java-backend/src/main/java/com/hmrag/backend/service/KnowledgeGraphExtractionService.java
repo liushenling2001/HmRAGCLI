@@ -36,13 +36,29 @@ public class KnowledgeGraphExtractionService {
 
     private static final Logger log = LoggerFactory.getLogger(KnowledgeGraphExtractionService.class);
     private static final int ATTRIBUTE_GOVERNANCE_MAX_BATCH_CHARS = 12_000;
-    private static final int EXTRACTION_MAX_FACTS_PER_BATCH = 24;
-    private static final int EXTRACTION_MAX_FACTS_PER_CHUNK = 4;
-    private static final int EXTRACTION_MAX_RESPONSE_CHARS = 12_000;
+    private static final int EXTRACTION_MAX_FACTS_PER_BATCH = 18;
+    private static final int EXTRACTION_MAX_FACTS_PER_CHUNK = 3;
+    private static final int EXTRACTION_MAX_RESPONSE_CHARS = 9_000;
+    private static final int STRUCTURAL_TOPIC_LIMIT = 8;
+    private static final int STRUCTURAL_FACT_LIMIT = 4;
 
     private final NamedParameterJdbcTemplate jdbcTemplate;
     private final ObjectMapper objectMapper;
     private final AppProperties appProperties;
+
+    public record ExtractionOptions(
+            String extractionDepth,
+            String scopeType,
+            String scopeKey,
+            Integer maxChunksPerDocument,
+            Integer minSelectedChunksPerDocument,
+            Integer maxSelectedChunksPerDocument,
+            Integer chunkBatchSize
+    ) {
+        public static ExtractionOptions skeleton() {
+            return new ExtractionOptions("skeleton", "document", null, null, null, null, null);
+        }
+    }
 
     public KnowledgeGraphExtractionService(
             NamedParameterJdbcTemplate jdbcTemplate,
@@ -55,26 +71,34 @@ public class KnowledgeGraphExtractionService {
     }
 
     public Map<String, Object> extract(UUID docId, UUID sourceFileId) {
-        return extract(docId, sourceFileId, progress -> {
+        return extract(docId, sourceFileId, ExtractionOptions.skeleton(), progress -> {
         });
     }
 
     public Map<String, Object> extract(UUID docId, UUID sourceFileId, Consumer<Map<String, Object>> progressCallback) {
+        return extract(docId, sourceFileId, ExtractionOptions.skeleton(), progressCallback);
+    }
+
+    public Map<String, Object> extract(UUID docId, UUID sourceFileId, ExtractionOptions rawOptions, Consumer<Map<String, Object>> progressCallback) {
         AppProperties.KnowledgeGraph config = appProperties.knowledgeGraph();
         if (config == null || config.extractionLlm() == null || !llmEnabled(config.extractionLlm())) {
             throw new IllegalStateException("Knowledge graph extraction LLM is disabled or not configured.");
         }
+        ExtractionOptions options = normalizeOptions(rawOptions);
         Map<String, Object> document = loadDocument(docId);
-        List<Map<String, Object>> loadedChunks = loadChunks(docId, Math.max(1, config.maxChunksPerDocument()));
+        List<Map<String, Object>> loadedChunks = loadChunks(docId, Math.max(1, options.maxChunksPerDocument() == null ? config.maxChunksPerDocument() : options.maxChunksPerDocument()));
         List<Map<String, Object>> units = loadKnowledgeUnits(docId, Math.max(0, config.maxKnowledgeUnitsPerDocument()));
-        ChunkSelectionResult chunkSelection = selectChunksForExtraction(loadedChunks, units, config);
+        ChunkSelectionResult chunkSelection = selectChunksForExtraction(loadedChunks, units, config, options);
         List<Map<String, Object>> chunks = chunkSelection.chunks();
+        StructuralGraph structuralGraph = buildStructuralGraph(document, loadedChunks, units, chunks, options);
         String extractionProfile = resolveExtractionProfile(config, document);
         List<Map<String, Object>> entities = new ArrayList<>();
+        entities.addAll(structuralGraph.entities());
         List<Map<String, Object>> facts = new ArrayList<>();
+        facts.addAll(structuralGraph.facts());
         List<Map<String, Object>> events = new ArrayList<>();
         List<Map<String, Object>> batchSummaries = new ArrayList<>();
-        int batchSize = Math.max(1, config.chunkBatchSize());
+        int batchSize = Math.max(1, options.chunkBatchSize() == null ? config.chunkBatchSize() : options.chunkBatchSize());
         int batchCount = (int) Math.ceil((double) chunks.size() / batchSize);
         int extractedChunkCount = 0;
         int failedBatchCount = 0;
@@ -83,17 +107,17 @@ public class KnowledgeGraphExtractionService {
             int batchNo = batchIndex + 1;
             List<Map<String, Object>> batchChunks = chunks.subList(i, Math.min(i + batchSize, chunks.size()));
             List<Map<String, Object>> batchUnits = filterUnitsForChunks(units, batchChunks);
-            String batchKey = extractionBatchKey(docId, graphVersion(), extractionProfile, batchNo, batchChunks);
-            String inputHash = extractionInputHash(document, batchChunks, batchUnits, extractionProfile, config.extractionLlm());
+            String batchKey = extractionBatchKey(docId, graphVersion(), extractionProfile, options, batchNo, batchChunks);
+            String inputHash = extractionInputHash(document, batchChunks, batchUnits, extractionProfile, options, config.extractionLlm());
             try {
                 Map<String, Object> batchCandidate = loadSuccessfulBatchCandidates(batchKey, inputHash);
                 List<Map<String, Object>> batchEntities;
                 List<Map<String, Object>> batchFacts;
                 List<Map<String, Object>> batchEvents;
                 if (batchCandidate == null) {
-                    UUID batchId = upsertExtractionBatch(docId, sourceFileId, graphVersion(), extractionProfile, batchNo, batchCount, batchKey, inputHash, batchChunks);
+                    UUID batchId = upsertExtractionBatch(docId, sourceFileId, graphVersion(), extractionProfile, options, batchNo, batchCount, batchKey, inputHash, batchChunks);
                     UUID attemptId = createExtractionAttempt(batchId);
-                    String prompt = buildPrompt(document, batchChunks, batchUnits, batchNo, batchCount, extractionProfile);
+                    String prompt = buildPrompt(document, batchChunks, batchUnits, batchNo, batchCount, extractionProfile, options);
                     markExtractionAttemptStarted(attemptId, prompt);
                     publishProgress(progressCallback, batchNo, batchCount, batchChunks.size(), "running", null);
                     long llmStartedAt = System.nanoTime();
@@ -120,7 +144,7 @@ public class KnowledgeGraphExtractionService {
                                 docId, batchNo, batchCount, rawEntities.size(), boundEntityCount, entityUsage.factEndpointEntities(), entityUsage.contextEntities(), binding.autoEntities(),
                                 rawRelations.size(), rawAttributes.size(), batchFacts.size(), binding.droppedFacts(),
                                 binding.droppedSubjectMissing(), binding.droppedObjectMissing());
-                        saveBatchCandidates(batchId, attemptId, batchKey, batchEntities, batchFacts);
+                        saveBatchCandidates(batchId, attemptId, batchKey, options, batchEntities, batchFacts);
                         markExtractionAttemptSuccess(attemptId, raw, extracted);
                         markExtractionBatchSuccess(batchId, batchEntities.size(), batchFacts.size(), batchFacts.stream().filter(this::isRelationFact).count());
                         publishProgress(progressCallback, batchNo, batchCount, batchChunks.size(), "success", null);
@@ -192,6 +216,9 @@ public class KnowledgeGraphExtractionService {
         metadata.put("model", config.extractionLlm().model());
         metadata.put("provider", normalizeProvider(config.extractionLlm().provider()));
         metadata.put("extractionProfile", extractionProfile);
+        metadata.put("extractionDepth", options.extractionDepth());
+        metadata.put("scopeType", options.scopeType());
+        metadata.put("scopeKey", options.scopeKey() == null ? "" : options.scopeKey());
         metadata.put("chunkCount", loadedChunks.size());
         metadata.put("selectedChunkCount", chunks.size());
         metadata.put("skippedChunkCount", Math.max(0, loadedChunks.size() - chunks.size()));
@@ -200,6 +227,8 @@ public class KnowledgeGraphExtractionService {
         metadata.put("batchCount", batchCount);
         metadata.put("chunkBatchSize", batchSize);
         metadata.put("chunkSelection", chunkSelection.summary());
+        metadata.put("structuralEntities", structuralGraph.entities().size());
+        metadata.put("structuralFacts", structuralGraph.facts().size());
         metadata.put("batchSummaries", batchSummaries);
         metadata.put("knowledgeUnitCount", units.size());
         metadata.put("entityMentions", entities.size());
@@ -236,6 +265,44 @@ public class KnowledgeGraphExtractionService {
 
     private long elapsedMillis(long startedAtNanos) {
         return Duration.ofNanos(System.nanoTime() - startedAtNanos).toMillis();
+    }
+
+    private ExtractionOptions normalizeOptions(ExtractionOptions options) {
+        if (options == null) {
+            return ExtractionOptions.skeleton();
+        }
+        String depth = normalizeExtractionDepth(options.extractionDepth());
+        String scopeType = normalizeScopeType(options.scopeType());
+        String scopeKey = options.scopeKey() == null || options.scopeKey().isBlank() ? null : options.scopeKey().trim();
+        return new ExtractionOptions(
+                depth,
+                scopeType,
+                scopeKey,
+                positiveOrNull(options.maxChunksPerDocument()),
+                positiveOrNull(options.minSelectedChunksPerDocument()),
+                positiveOrNull(options.maxSelectedChunksPerDocument()),
+                positiveOrNull(options.chunkBatchSize())
+        );
+    }
+
+    private Integer positiveOrNull(Integer value) {
+        return value == null || value <= 0 ? null : value;
+    }
+
+    private String normalizeExtractionDepth(String value) {
+        String normalized = value == null || value.isBlank() ? "skeleton" : value.trim().toLowerCase(Locale.ROOT);
+        return switch (normalized) {
+            case "deep", "detail", "enrich", "enrichment" -> "enrichment";
+            default -> "skeleton";
+        };
+    }
+
+    private String normalizeScopeType(String value) {
+        String normalized = value == null || value.isBlank() ? "document" : value.trim().toLowerCase(Locale.ROOT);
+        return switch (normalized) {
+            case "entity", "section", "query" -> normalized;
+            default -> "document";
+        };
     }
 
     public String graphVersion() {
@@ -278,7 +345,7 @@ public class KnowledgeGraphExtractionService {
     private List<Map<String, Object>> loadChunks(UUID docId, int limit) {
         return jdbcTemplate.query(
                 """
-                SELECT id, chunk_no, chunk_type, title, content, page_no
+                SELECT id, chunk_no, chunk_type, title, content, page_no, metadata_json::text AS metadata_json
                 FROM chunks
                 WHERE doc_id = :docId
                 ORDER BY chunk_no ASC
@@ -296,6 +363,7 @@ public class KnowledgeGraphExtractionService {
                     item.put("content", truncate(rs.getString("content"), 1400));
                     int pageNo = rs.getInt("page_no");
                     item.put("pageNo", rs.wasNull() ? null : pageNo);
+                    item.put("metadata", parseMap(rs.getString("metadata_json")));
                     return item;
                 }
         );
@@ -334,10 +402,180 @@ public class KnowledgeGraphExtractionService {
         );
     }
 
+    private StructuralGraph buildStructuralGraph(
+            Map<String, Object> document,
+            List<Map<String, Object>> loadedChunks,
+            List<Map<String, Object>> units,
+            List<Map<String, Object>> selectedChunks,
+            ExtractionOptions options
+    ) {
+        if (options == null || !"skeleton".equals(options.extractionDepth())) {
+            return new StructuralGraph(List.of(), List.of());
+        }
+        List<String> topics = structuralTopics(document, loadedChunks, units);
+        if (topics.isEmpty()) {
+            return new StructuralGraph(List.of(), List.of());
+        }
+        Map<String, Object> anchorChunk = structuralAnchorChunk(loadedChunks, selectedChunks);
+        String chunkId = blankTo(stringValue(anchorChunk.get("chunkId")), "document:" + stringValue(document.get("docId")));
+        Object pageNo = anchorChunk.get("pageNo");
+        List<Map<String, Object>> entities = new ArrayList<>();
+        List<Map<String, Object>> facts = new ArrayList<>();
+        for (int i = 0; i < topics.size(); i++) {
+            String topic = topics.get(i);
+            String mentionId = "struct_topic_" + i;
+            Map<String, Object> entity = new LinkedHashMap<>();
+            entity.put("mentionId", mentionId);
+            entity.put("name", topic);
+            entity.put("type", inferStructuralTopicType(topic));
+            entity.put("definition", structuralTopicDefinition(document, topic));
+            entity.put("chunkId", chunkId);
+            entity.put("sourceSpan", "索引结构主题：" + topic);
+            entity.put("pageNo", pageNo);
+            entity.put("confidence", i == 0 ? 0.82d : 0.72d);
+            entity.put("entityRole", "structure_topic");
+            entities.add(entity);
+        }
+        return new StructuralGraph(entities, facts);
+    }
+
+    private List<String> structuralTopics(Map<String, Object> document, List<Map<String, Object>> chunks, List<Map<String, Object>> units) {
+        LinkedHashMap<String, String> topics = new LinkedHashMap<>();
+        Map<String, Object> metadata = mapFromObject(document.get("metadata"));
+        Map<String, Object> overview = mapFromObject(metadata.get("docOverview"));
+        addStructuralTopicCandidates(topics, stringList(overview.get("keyTopics")));
+        addStructuralTopicCandidates(topics, stringList(overview.get("keywords")));
+        addStructuralTopicCandidates(topics, stringList(overview.get("sections")).stream().limit(8).toList());
+        addStructuralTopicCandidates(topics, List.of(
+                stringValue(document.get("title")),
+                stripExtension(fileNameFromPath(stringValue(document.get("sourceFilename")))),
+                stripExtension(fileNameFromPath(stringValue(document.get("relativePath"))))
+        ));
+        if (chunks != null) {
+            addStructuralTopicCandidates(topics, chunks.stream()
+                    .map(chunk -> stringValue(chunk.get("title")))
+                    .filter(title -> !title.isBlank())
+                    .limit(20)
+                    .toList());
+        }
+        if (units != null) {
+            addStructuralTopicCandidates(topics, units.stream()
+                    .flatMap(unit -> List.of(
+                            stringValue(unit.get("subject")),
+                            stringValue(unit.get("indicator")),
+                            stringValue(unit.get("title"))
+                    ).stream())
+                    .filter(value -> !value.isBlank())
+                    .limit(30)
+                    .toList());
+        }
+        return topics.values().stream().limit(STRUCTURAL_TOPIC_LIMIT).toList();
+    }
+
+    private void addStructuralTopicCandidates(LinkedHashMap<String, String> topics, List<String> candidates) {
+        if (candidates == null) {
+            return;
+        }
+        for (String candidate : candidates) {
+            for (String topic : normalizeStructuralTopics(candidate)) {
+                topics.putIfAbsent(normalizeMatchText(topic), topic);
+                if (topics.size() >= STRUCTURAL_TOPIC_LIMIT) {
+                    return;
+                }
+            }
+        }
+    }
+
+    private List<String> normalizeStructuralTopics(String raw) {
+        String value = stringValue(raw);
+        if (value.isBlank()) {
+            return List.of();
+        }
+        value = stripExtension(fileNameFromPath(value))
+                .replaceAll("(?i)^(liushl[_\\-])", "")
+                .replaceAll("[《》<>“”\"'【】\\[\\]()（）]", " ")
+                .replaceAll("[_\\\\/|,，;；:：]", " ")
+                .replaceAll("\\s+", " ")
+                .trim();
+        List<String> parts = new ArrayList<>();
+        for (String part : value.split("\\s+")) {
+            String cleaned = part.replaceAll("^(第?[一二三四五六七八九十0-9]+[章节篇部分、.．-]*)", "")
+                    .replaceAll("(研究|分析|探索|探析|综述|现状|展望|问题|应用|挑战|设计|实现)$", "")
+                    .replaceAll("^(基于|关于|面向|一种)", "")
+                    .replaceAll("(的|与|和|及)$", "")
+                    .trim();
+            if (isUsefulStructuralTopic(cleaned)) {
+                parts.add(cleaned);
+            }
+        }
+        return parts;
+    }
+
+    private boolean isUsefulStructuralTopic(String value) {
+        String normalized = normalizeMatchText(value);
+        if (normalized.length() < 2 || normalized.length() > 24) {
+            return false;
+        }
+        if (normalized.matches("^[0-9]+$")) {
+            return false;
+        }
+        String lower = normalized.toLowerCase(Locale.ROOT);
+        if (lower.matches("^[a-z]+$")) {
+            return false;
+        }
+        if (lower.matches("^(hyperlink|pageref|ref|doi|journal|of|and|the|to|key|vol|no|pp|et|al)$")) {
+            return false;
+        }
+        return !Set.of(
+                "摘要", "关键词", "目录", "参考文献", "结论", "引言", "绪论", "正文", "作者", "单位", "基金项目",
+                "附件", "说明", "备注", "序号", "编号", "性别", "日期", "时间", "填报日期", "申报时间", "申报单位",
+                "内部", "主要内容", "项目名称", "姓名", "联系电话", "通讯地址"
+        ).contains(normalized);
+    }
+
+    private Map<String, Object> structuralAnchorChunk(List<Map<String, Object>> loadedChunks, List<Map<String, Object>> selectedChunks) {
+        if (selectedChunks != null && !selectedChunks.isEmpty()) {
+            return selectedChunks.getFirst();
+        }
+        if (loadedChunks != null && !loadedChunks.isEmpty()) {
+            return loadedChunks.getFirst();
+        }
+        return Map.of();
+    }
+
+    private String structuralTopicDefinition(Map<String, Object> document, String topic) {
+        String title = stringValue(document.get("title"));
+        if (title.isBlank()) {
+            return "由索引阶段的文档结构信号识别出的文档主题：" + topic;
+        }
+        return truncate("由索引阶段的标题、目录或关键词识别出的文档主题；来源文档：" + title, 120);
+    }
+
+    private String inferStructuralTopicType(String topic) {
+        String normalized = normalizeMatchText(topic);
+        if (normalized.contains("系统") || normalized.contains("平台")) {
+            return "System";
+        }
+        if (normalized.contains("技术") || normalized.contains("算法") || normalized.contains("网络") || normalized.contains("物联网")) {
+            return "Technology";
+        }
+        if (normalized.contains("政策") || normalized.contains("制度") || normalized.contains("办法") || normalized.contains("规定")) {
+            return "Policy";
+        }
+        if (normalized.contains("指标") || normalized.contains("要求") || normalized.contains("性能")) {
+            return "Requirement";
+        }
+        if (normalized.contains("流程") || normalized.contains("过程")) {
+            return "Process";
+        }
+        return "Concept";
+    }
+
     private ChunkSelectionResult selectChunksForExtraction(
             List<Map<String, Object>> chunks,
             List<Map<String, Object>> units,
-            AppProperties.KnowledgeGraph config
+            AppProperties.KnowledgeGraph config,
+            ExtractionOptions options
     ) {
         if (chunks == null || chunks.isEmpty()) {
             return new ChunkSelectionResult(List.of(), Map.of(
@@ -357,10 +595,15 @@ public class KnowledgeGraphExtractionService {
         }
         Map<String, List<Map<String, Object>>> unitsByChunkId = unitsByChunkId(units);
         int minChars = Math.max(0, config.minChunkChars());
-        int minSelected = Math.max(0, config.minSelectedChunksPerDocument());
-        int maxSelected = config.maxSelectedChunksPerDocument() <= 0
+        int minSelected = Math.max(0, options != null && options.minSelectedChunksPerDocument() != null
+                ? options.minSelectedChunksPerDocument()
+                : config.minSelectedChunksPerDocument());
+        int configuredMaxSelected = options != null && options.maxSelectedChunksPerDocument() != null
+                ? options.maxSelectedChunksPerDocument()
+                : config.maxSelectedChunksPerDocument();
+        int maxSelected = configuredMaxSelected <= 0
                 ? chunks.size()
-                : Math.max(minSelected, config.maxSelectedChunksPerDocument());
+                : Math.max(minSelected, configuredMaxSelected);
         maxSelected = Math.min(maxSelected, chunks.size());
         List<ChunkCandidate> candidates = new ArrayList<>();
         Set<String> seenContent = new HashSet<>();
@@ -370,6 +613,7 @@ public class KnowledgeGraphExtractionService {
             String chunkId = stringValue(chunk.get("chunkId"));
             List<Map<String, Object>> chunkUnits = unitsByChunkId.getOrDefault(chunkId, List.of());
             int score = chunkSelectionScore(chunk, chunkUnits, minChars);
+            score += chunkScopeBoost(chunk, chunkUnits, options);
             String contentKey = normalizedChunkContentKey(chunk);
             boolean duplicate = !contentKey.isBlank() && !seenContent.add(contentKey);
             if (duplicate && chunkUnits.isEmpty()) {
@@ -412,9 +656,43 @@ public class KnowledgeGraphExtractionService {
                 "chunk_type",
                 "content_density",
                 "numeric_or_table_shape",
-                "near_duplicate_content"
+                "near_duplicate_content",
+                "scope_key_overlap"
         ));
         return new ChunkSelectionResult(selected, summary);
+    }
+
+    private int chunkScopeBoost(Map<String, Object> chunk, List<Map<String, Object>> units, ExtractionOptions options) {
+        if (options == null || !"enrichment".equals(options.extractionDepth()) || options.scopeKey() == null || options.scopeKey().isBlank()) {
+            return 0;
+        }
+        String key = normalizeMatchText(options.scopeKey());
+        if (key.isBlank()) {
+            return 0;
+        }
+        int boost = 0;
+        String chunkText = normalizeMatchText(stringValue(chunk.get("title")) + " " + stringValue(chunk.get("content")));
+        if (chunkText.contains(key)) {
+            boost += 120;
+        }
+        for (Map<String, Object> unit : units) {
+            String unitText = normalizeMatchText(stringValue(unit.get("title")) + " "
+                    + stringValue(unit.get("subject")) + " "
+                    + stringValue(unit.get("indicator")) + " "
+                    + stringValue(unit.get("normalizedText")) + " "
+                    + stringValue(unit.get("content")));
+            if (unitText.contains(key)) {
+                boost += 80;
+                break;
+            }
+        }
+        return boost;
+    }
+
+    private String normalizeMatchText(String value) {
+        return Normalizer.normalize(stringValue(value), Normalizer.Form.NFKC)
+                .toLowerCase(Locale.ROOT)
+                .replaceAll("\\s+", "");
     }
 
     private Map<String, List<Map<String, Object>>> unitsByChunkId(List<Map<String, Object>> units) {
@@ -1017,6 +1295,7 @@ public class KnowledgeGraphExtractionService {
             UUID docId,
             String graphVersion,
             String extractionProfile,
+            ExtractionOptions options,
             int batchNo,
             List<Map<String, Object>> chunks
     ) {
@@ -1025,7 +1304,10 @@ public class KnowledgeGraphExtractionService {
                 .filter(chunkId -> !chunkId.isBlank())
                 .reduce((left, right) -> left + "," + right)
                 .orElse("");
-        return sha256(docId + "|" + graphVersion + "|" + extractionProfile + "|" + batchNo + "|" + chunkIds);
+        return sha256(docId + "|" + graphVersion + "|" + extractionProfile + "|"
+                + options.extractionDepth() + "|" + options.scopeType() + "|"
+                + (options.scopeKey() == null ? "" : options.scopeKey()) + "|"
+                + batchNo + "|" + chunkIds);
     }
 
     private String extractionInputHash(
@@ -1033,15 +1315,19 @@ public class KnowledgeGraphExtractionService {
             List<Map<String, Object>> chunks,
             List<Map<String, Object>> units,
             String extractionProfile,
+            ExtractionOptions options,
             AppProperties.ExtractionLlm llm
     ) {
         try {
             Map<String, Object> input = new LinkedHashMap<>();
-            input.put("promptVersion", "triple-candidate-fact-compatible-v3-structured-units-bounded-output");
+            input.put("promptVersion", "triple-candidate-fact-compatible-v5-guarded-structure-context");
             input.put("document", documentPromptContext(document));
             input.put("chunks", chunks);
             input.put("knowledgeUnits", unitsPromptContext(units));
             input.put("extractionProfile", extractionProfile);
+            input.put("extractionDepth", options.extractionDepth());
+            input.put("scopeType", options.scopeType());
+            input.put("scopeKey", options.scopeKey());
             input.put("provider", normalizeProvider(llm.provider()));
             input.put("model", llm.model());
             return sha256(objectMapper.writeValueAsString(input));
@@ -1055,6 +1341,7 @@ public class KnowledgeGraphExtractionService {
             UUID sourceFileId,
             String graphVersion,
             String extractionProfile,
+            ExtractionOptions options,
             int batchNo,
             int batchCount,
             String batchKey,
@@ -1065,10 +1352,12 @@ public class KnowledgeGraphExtractionService {
         return jdbcTemplate.queryForObject(
                 """
                 INSERT INTO graph_extraction_batches (
-                    doc_id, source_file_id, graph_version, extraction_profile, batch_no, batch_count,
+                    doc_id, source_file_id, graph_version, extraction_profile,
+                    extraction_depth, scope_type, scope_key, batch_no, batch_count,
                     batch_key, input_hash, chunk_ids_json, status, created_at, updated_at
                 ) VALUES (
-                    :docId, :sourceFileId, :graphVersion, :extractionProfile, :batchNo, :batchCount,
+                    :docId, :sourceFileId, :graphVersion, :extractionProfile,
+                    :extractionDepth, :scopeType, :scopeKey, :batchNo, :batchCount,
                     :batchKey, :inputHash, CAST(:chunkIdsJson AS jsonb), 'pending', CURRENT_TIMESTAMP, CURRENT_TIMESTAMP
                 )
                 ON CONFLICT (batch_key)
@@ -1077,6 +1366,9 @@ public class KnowledgeGraphExtractionService {
                     source_file_id = EXCLUDED.source_file_id,
                     graph_version = EXCLUDED.graph_version,
                     extraction_profile = EXCLUDED.extraction_profile,
+                    extraction_depth = EXCLUDED.extraction_depth,
+                    scope_type = EXCLUDED.scope_type,
+                    scope_key = EXCLUDED.scope_key,
                     batch_no = EXCLUDED.batch_no,
                     batch_count = EXCLUDED.batch_count,
                     input_hash = EXCLUDED.input_hash,
@@ -1094,6 +1386,9 @@ public class KnowledgeGraphExtractionService {
                         .addValue("sourceFileId", sourceFileId)
                         .addValue("graphVersion", graphVersion)
                         .addValue("extractionProfile", extractionProfile)
+                        .addValue("extractionDepth", options.extractionDepth())
+                        .addValue("scopeType", options.scopeType())
+                        .addValue("scopeKey", options.scopeKey())
                         .addValue("batchNo", batchNo)
                         .addValue("batchCount", batchCount)
                         .addValue("batchKey", batchKey)
@@ -1273,6 +1568,7 @@ public class KnowledgeGraphExtractionService {
             UUID batchId,
             UUID attemptId,
             String batchKey,
+            ExtractionOptions options,
             List<Map<String, Object>> entities,
             List<Map<String, Object>> facts
     ) {
@@ -1281,7 +1577,7 @@ public class KnowledgeGraphExtractionService {
                 new MapSqlParameterSource("batchId", batchId)
         );
         for (Map<String, Object> entity : entities) {
-            insertCandidate(batchId, attemptId, batchKey, "entity", stringValue(entity.get("mentionId")), entity);
+            insertCandidate(batchId, attemptId, batchKey, options, "entity", stringValue(entity.get("mentionId")), entity);
         }
         for (Map<String, Object> fact : facts) {
             String stableLocalId = stringValue(fact.get("subjectMentionId")) + "|"
@@ -1289,7 +1585,7 @@ public class KnowledgeGraphExtractionService {
                     + stringValue(fact.get("objectMentionId")) + "|"
                     + stringValue(fact.get("chunkId")) + "|"
                     + stringValue(fact.get("statement"));
-            insertCandidate(batchId, attemptId, batchKey, "fact", stableLocalId, fact);
+            insertCandidate(batchId, attemptId, batchKey, options, "fact", stableLocalId, fact);
         }
     }
 
@@ -1297,6 +1593,7 @@ public class KnowledgeGraphExtractionService {
             UUID batchId,
             UUID attemptId,
             String batchKey,
+            ExtractionOptions options,
             String candidateType,
             String stableLocalId,
             Map<String, Object> payload
@@ -1307,16 +1604,21 @@ public class KnowledgeGraphExtractionService {
         jdbcTemplate.update(
                 """
                 INSERT INTO graph_candidate_records (
-                    batch_id, attempt_id, candidate_key, candidate_type, stable_local_id,
+                    batch_id, attempt_id, candidate_key, candidate_type,
+                    extraction_depth, scope_type, scope_key, stable_local_id,
                     payload_hash, payload_json, status, created_at, updated_at
                 ) VALUES (
-                    :batchId, :attemptId, :candidateKey, :candidateType, :stableLocalId,
+                    :batchId, :attemptId, :candidateKey, :candidateType,
+                    :extractionDepth, :scopeType, :scopeKey, :stableLocalId,
                     :payloadHash, CAST(:payloadJson AS jsonb), 'active', CURRENT_TIMESTAMP, CURRENT_TIMESTAMP
                 )
                 ON CONFLICT (candidate_key)
                 DO UPDATE SET
                     batch_id = EXCLUDED.batch_id,
                     attempt_id = EXCLUDED.attempt_id,
+                    extraction_depth = EXCLUDED.extraction_depth,
+                    scope_type = EXCLUDED.scope_type,
+                    scope_key = EXCLUDED.scope_key,
                     payload_json = EXCLUDED.payload_json,
                     status = 'active',
                     updated_at = CURRENT_TIMESTAMP
@@ -1326,17 +1628,25 @@ public class KnowledgeGraphExtractionService {
                         .addValue("attemptId", attemptId)
                         .addValue("candidateKey", candidateKey)
                         .addValue("candidateType", candidateType)
+                        .addValue("extractionDepth", options.extractionDepth())
+                        .addValue("scopeType", options.scopeType())
+                        .addValue("scopeKey", options.scopeKey())
                         .addValue("stableLocalId", truncate(stableLocalId, 500))
                         .addValue("payloadHash", payloadHash)
                         .addValue("payloadJson", payloadJson)
         );
     }
 
-    private String buildPrompt(Map<String, Object> document, List<Map<String, Object>> chunks, List<Map<String, Object>> units, int batchNo, int batchCount, String extractionProfile) throws JsonProcessingException {
+    private String buildPrompt(Map<String, Object> document, List<Map<String, Object>> chunks, List<Map<String, Object>> units, int batchNo, int batchCount, String extractionProfile, ExtractionOptions options) throws JsonProcessingException {
+        String depthInstruction = "enrichment".equals(options.extractionDepth())
+                ? "当前任务是局部深化补充：优先补充作用域相关实体的属性、关系、阶段变化和证据，不要重复泛化整篇文档。"
+                : "当前任务是全量骨架构建：优先抽取核心实体、粗关系、主题和文档级事实，避免过细碎的低价值对象。";
         return """
                 你是严格的信息三元组抽取器。请只返回一个 JSON 对象，不要 Markdown。
                 目标：从当前 chunk 批次中高召回抽取“候选事实三元组”，后端会再做实体匹配、属性/关系分流、文档级合并和全局融合。
                 当前批次：%s / %s。
+                抽取深度：%s；作用域：%s；作用域键：%s。
+                %s
 
                 必须返回字段：
                 {
@@ -1385,6 +1695,11 @@ public class KnowledgeGraphExtractionService {
                 9. 不要逐行展开表格、清单、经费明细、人员名单、编号列表；只抽取表格/清单表达的核心对象、字段含义、约束或汇总关系。
                 10. entities 只输出 triples 会用到的端点实体和少量必要上下文实体，避免把所有短语都列为实体。
                 11. statement/sourceSpan 保持短句，单项不超过 80 个中文字符；整个 JSON 响应控制在 %s 字符以内。
+                12. 禁止把格式噪声、引用字段、页码字段、英文功能词抽成实体或关系，例如 HYPERLINK、PAGEREF、DOI、JOURNAL、of、and、the、to、Key、Vol、No。
+                13. 禁止仅因为标题、目录、关键词中共同出现就创建关系；索引信号只用于理解上下文，关系必须由 chunk 原文直接表达。
+                14. 表单字段名默认不是实体，例如 序号、编号、姓名、性别、日期、时间、备注、附件、说明；只有字段值是明确业务对象时才可作为实体。
+                15. 同一批次内同名实体要保持同一名称和类型；如果类型拿不准，优先使用更泛化但稳定的 Concept 或 Technology。
+                16. 如果无法在长度限制内完整输出，必须减少 triples 数量，保证 JSON 完整闭合。
 
                 文档：
                 %s
@@ -1392,11 +1707,15 @@ public class KnowledgeGraphExtractionService {
                 chunks：
                 %s
 
-                已有索引信号（来自解析/knowledge_units，只作为当前批次上下文，不等同于最终实体）：
+                已有索引信号（来自解析阶段的文档标题、目录、关键词和 knowledge_units；这些是结构上下文，不需要重新抽目录）：
                 %s
                 """.formatted(
                 batchNo,
                 batchCount,
+                options.extractionDepth(),
+                options.scopeType(),
+                options.scopeKey() == null ? "" : options.scopeKey(),
+                depthInstruction,
                 EXTRACTION_MAX_FACTS_PER_BATCH,
                 EXTRACTION_MAX_FACTS_PER_CHUNK,
                 EXTRACTION_MAX_RESPONSE_CHARS,
@@ -1412,6 +1731,16 @@ public class KnowledgeGraphExtractionService {
         context.put("docType", document.get("docType"));
         context.put("sourceFilename", document.get("sourceFilename"));
         context.put("relativePath", document.get("relativePath"));
+        Map<String, Object> metadata = mapFromObject(document.get("metadata"));
+        Map<String, Object> overview = mapFromObject(metadata.get("docOverview"));
+        if (!overview.isEmpty()) {
+            context.put("overview", Map.of(
+                    "summary", truncate(stringValue(overview.get("summary")), 300),
+                    "sections", stringList(overview.get("sections")).stream().limit(16).toList(),
+                    "keyTopics", stringList(overview.get("keyTopics")).stream().limit(12).toList(),
+                    "keywords", stringList(overview.get("keywords")).stream().limit(16).toList()
+            ));
+        }
         return context;
     }
 
@@ -1485,11 +1814,24 @@ public class KnowledgeGraphExtractionService {
         if ("document".equals(type)) {
             return true;
         }
+        if (isFormatNoiseEntityName(name)) {
+            return true;
+        }
         String normalizedName = normalizeArtifactName(name);
         if (sourceArtifactNames(document).contains(normalizedName)) {
             return true;
         }
         return looksLikeImportedFilename(name);
+    }
+
+    private boolean isFormatNoiseEntityName(String name) {
+        String compact = Normalizer.normalize(stringValue(name), Normalizer.Form.NFKC)
+                .toLowerCase(Locale.ROOT)
+                .replaceAll("\\s+", "");
+        return Set.of(
+                "hyperlink", "pageref", "ref", "doi", "journal", "of", "and", "the", "to", "key",
+                "vol", "no", "pp", "et", "al"
+        ).contains(compact);
     }
 
     private Set<String> sourceArtifactNames(Map<String, Object> document) {
@@ -1991,6 +2333,7 @@ public class KnowledgeGraphExtractionService {
         body.put("temperature", 0);
         if (llm.maxCompletionTokens() > 0) {
             body.put("max_tokens", llm.maxCompletionTokens());
+            body.put("max_completion_tokens", llm.maxCompletionTokens());
         }
         body.put("messages", List.of(
                 Map.of("role", "system", "content", "你是知识图谱抽取器，只能返回 JSON 对象。"),
@@ -2100,6 +2443,20 @@ public class KnowledgeGraphExtractionService {
         }
     }
 
+    private List<String> stringList(Object raw) {
+        if (!(raw instanceof List<?> list)) {
+            return List.of();
+        }
+        List<String> result = new ArrayList<>();
+        for (Object item : list) {
+            String value = stringValue(item);
+            if (!value.isBlank()) {
+                result.add(value);
+            }
+        }
+        return result;
+    }
+
     @SuppressWarnings("unchecked")
     private Map<String, Object> mapFromObject(Object raw) {
         return raw instanceof Map<?, ?> map ? (Map<String, Object>) map : Map.of();
@@ -2199,5 +2556,8 @@ public class KnowledgeGraphExtractionService {
             }
         }
         return "";
+    }
+
+    private record StructuralGraph(List<Map<String, Object>> entities, List<Map<String, Object>> facts) {
     }
 }

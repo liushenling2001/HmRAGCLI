@@ -31,9 +31,24 @@ public class KnowledgeGraphController {
         return knowledgeGraphBuildService.listJobs(status, limit);
     }
 
+    @GetMapping("/runtime-settings")
+    public Map<String, Object> runtimeSettings() {
+        return knowledgeGraphBuildService.runtimeSettings();
+    }
+
+    @PostMapping("/runtime-settings/auto-build-after-index")
+    public Map<String, Object> updateAutoBuildAfterIndex(@RequestParam boolean enabled) {
+        return knowledgeGraphBuildService.updateAutoBuildAfterIndex(enabled);
+    }
+
     @GetMapping("/view")
     public Map<String, Object> graphView(@RequestParam(defaultValue = "50") int targetEntities) {
         return knowledgeGraphBuildService.graphView(targetEntities);
+    }
+
+    @GetMapping("/view/top-connected")
+    public Map<String, Object> topConnectedGraphView(@RequestParam(defaultValue = "60") int targetEntities) {
+        return knowledgeGraphBuildService.topConnectedGraphView(targetEntities);
     }
 
     @GetMapping("/stats")
@@ -60,6 +75,14 @@ public class KnowledgeGraphController {
             @RequestParam(defaultValue = "300") int connectionLimit
     ) {
         return knowledgeGraphBuildService.entityDetail(entityId, connectionLimit);
+    }
+
+    @PostMapping("/entities/{entityId}/enrich")
+    public Map<String, Object> enrichEntity(
+            @PathVariable String entityId,
+            @RequestParam(defaultValue = "100") int limit
+    ) {
+        return knowledgeGraphBuildService.enqueueEntityEnrichment(entityId, limit);
     }
 
     @GetMapping("/entity-type-templates")
@@ -95,9 +118,13 @@ public class KnowledgeGraphController {
     public Map<String, Object> batchBuild(
             @RequestParam(required = false) UUID dataSourceId,
             @RequestParam(defaultValue = "200") int limit,
-            @RequestParam(defaultValue = "false") boolean rebuildSuccess
+            @RequestParam(defaultValue = "false") boolean rebuildSuccess,
+            @RequestParam(defaultValue = "skeleton") String extractionDepth,
+            @RequestParam(defaultValue = "document") String scopeType,
+            @RequestParam(required = false) String scopeKey
     ) {
-        return knowledgeGraphBuildService.enqueueIndexedFiles(limit, dataSourceId, rebuildSuccess, rebuildSuccess ? "batch_rebuild" : "batch_missing");
+        String trigger = "enrichment".equalsIgnoreCase(extractionDepth) ? "batch_enrichment" : (rebuildSuccess ? "batch_rebuild" : "batch_skeleton");
+        return knowledgeGraphBuildService.enqueueIndexedFiles(limit, dataSourceId, rebuildSuccess, trigger, extractionDepth, scopeType, scopeKey);
     }
 
     @GetMapping("/fusion-jobs")

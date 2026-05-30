@@ -24,6 +24,11 @@ import java.util.UUID;
 @Service
 public class KnowledgeGraphBuildService {
 
+    private static final String DEPTH_SKELETON = "skeleton";
+    private static final String DEPTH_ENRICHMENT = "enrichment";
+    private static final String SCOPE_DOCUMENT = "document";
+    private static final String SETTING_AUTO_BUILD_AFTER_INDEX = "auto_build_after_index";
+
     private final NamedParameterJdbcTemplate jdbcTemplate;
     private final TransactionTemplate transactionTemplate;
     private final ObjectMapper objectMapper;
@@ -52,8 +57,41 @@ public class KnowledgeGraphBuildService {
         return config != null && config.enabled();
     }
 
+    public Map<String, Object> runtimeSettings() {
+        return Map.of(
+                "knowledgeGraphEnabled", isEnabled(),
+                "autoBuildAfterIndex", autoBuildAfterIndexEnabled()
+        );
+    }
+
+    public Map<String, Object> updateAutoBuildAfterIndex(boolean enabled) {
+        jdbcTemplate.update(
+                """
+                INSERT INTO graph_runtime_settings (setting_key, setting_value, description, created_at, updated_at)
+                VALUES (:key, :value, :description, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
+                ON CONFLICT (setting_key)
+                DO UPDATE SET
+                    setting_value = EXCLUDED.setting_value,
+                    updated_at = CURRENT_TIMESTAMP
+                """,
+                new MapSqlParameterSource()
+                        .addValue("key", SETTING_AUTO_BUILD_AFTER_INDEX)
+                        .addValue("value", Boolean.toString(enabled))
+                        .addValue("description", "Whether graph skeleton build jobs are enqueued automatically after indexing finishes.")
+        );
+        return runtimeSettings();
+    }
+
+    public boolean autoBuildAfterIndexEnabled() {
+        return runtimeFlag(SETTING_AUTO_BUILD_AFTER_INDEX, false);
+    }
+
     public Map<String, Object> graphView(int targetEntities) {
         return graphStoreClient.readGraphView(targetEntities);
+    }
+
+    public Map<String, Object> topConnectedGraphView(int targetEntities) {
+        return graphStoreClient.readTopConnectedGraphView(targetEntities);
     }
 
     public Map<String, Object> graphStats() {
@@ -165,16 +203,23 @@ public class KnowledgeGraphBuildService {
     }
 
     public void enqueueAfterIndex(SourceFile file) {
-        if (!isEnabled() || file == null || file.getDocId() == null) {
+        if (!isEnabled() || !autoBuildAfterIndexEnabled() || file == null || file.getDocId() == null) {
             return;
         }
-        enqueueJob(file.getId(), file.getDocId(), UUID.randomUUID(), "ingest");
+        enqueueJob(file.getId(), file.getDocId(), UUID.randomUUID(), "ingest", DEPTH_SKELETON, SCOPE_DOCUMENT, null);
     }
 
     private boolean enqueueJob(UUID sourceFileId, UUID docId, UUID graphBatchId, String triggerSource) {
+        return enqueueJob(sourceFileId, docId, graphBatchId, triggerSource, DEPTH_SKELETON, SCOPE_DOCUMENT, null);
+    }
+
+    private boolean enqueueJob(UUID sourceFileId, UUID docId, UUID graphBatchId, String triggerSource, String extractionDepth, String scopeType, String scopeKey) {
         if (!isEnabled() || sourceFileId == null || docId == null) {
             return false;
         }
+        String normalizedDepth = normalizeExtractionDepth(extractionDepth);
+        String normalizedScopeType = normalizeScopeType(scopeType);
+        String normalizedScopeKey = blankToNull(scopeKey);
         UUID jobId = UUID.randomUUID();
         String store = graphStoreClient.provider();
         String graphVersion = extractionService.graphVersion();
@@ -186,6 +231,9 @@ public class KnowledgeGraphBuildService {
                 .addValue("graphBatchId", graphBatchId)
                 .addValue("docKey", docId.toString())
                 .addValue("triggerSource", triggerSource == null || triggerSource.isBlank() ? "manual" : triggerSource)
+                .addValue("extractionDepth", normalizedDepth)
+                .addValue("scopeType", normalizedScopeType)
+                .addValue("scopeKey", normalizedScopeKey)
                 .addValue("graphStore", store)
                 .addValue("graphVersion", graphVersion)
                 .addValue("extractModel", model);
@@ -193,10 +241,12 @@ public class KnowledgeGraphBuildService {
                 """
                 INSERT INTO graph_build_jobs (
                     id, source_file_id, doc_id, graph_batch_id, status, stage, trigger_source,
+                    extraction_depth, scope_type, scope_key,
                     graph_store, graph_version, extract_model, fusion_model,
                     created_at, updated_at
                 ) VALUES (
                     :id, :sourceFileId, :docId, :graphBatchId, 'queued', 'queued', :triggerSource,
+                    :extractionDepth, :scopeType, :scopeKey,
                     :graphStore, :graphVersion, :extractModel, 'deterministic-canonical-fusion-v1',
                     CURRENT_TIMESTAMP, CURRENT_TIMESTAMP
                 )
@@ -240,17 +290,19 @@ public class KnowledgeGraphBuildService {
         return jdbcTemplate.query(
                 """
                 WITH ranked AS (
-                    SELECT id, source_file_id, doc_id, graph_batch_id, status, stage, trigger_source, graph_store,
+                    SELECT id, source_file_id, doc_id, graph_batch_id, status, stage, trigger_source,
+                           extraction_depth, scope_type, scope_key, graph_store,
                            graph_version, extract_model, fusion_model, output_summary_json,
                            error_message, heartbeat_at, started_at, finished_at, created_at, updated_at,
                            ROW_NUMBER() OVER (
-                               PARTITION BY source_file_id
+                               PARTITION BY source_file_id, extraction_depth, scope_type, COALESCE(scope_key, '')
                                ORDER BY created_at DESC, updated_at DESC
                            ) AS rn
                     FROM graph_build_jobs
                     WHERE status <> 'cancelled'
                 )
-                SELECT id, source_file_id, doc_id, graph_batch_id, status, stage, trigger_source, graph_store,
+                SELECT id, source_file_id, doc_id, graph_batch_id, status, stage, trigger_source,
+                       extraction_depth, scope_type, scope_key, graph_store,
                        graph_version, extract_model, fusion_model, output_summary_json::text AS output_summary_json,
                        error_message, heartbeat_at, started_at, finished_at, created_at, updated_at
                 FROM ranked
@@ -278,6 +330,9 @@ public class KnowledgeGraphBuildService {
                     item.put("status", rs.getString("status"));
                     item.put("stage", rs.getString("stage"));
                     item.put("triggerSource", rs.getString("trigger_source"));
+                    item.put("extractionDepth", rs.getString("extraction_depth"));
+                    item.put("scopeType", rs.getString("scope_type"));
+                    item.put("scopeKey", rs.getString("scope_key"));
                     item.put("graphStore", rs.getString("graph_store"));
                     item.put("graphVersion", rs.getString("graph_version"));
                     item.put("extractModel", rs.getString("extract_model"));
@@ -301,7 +356,7 @@ public class KnowledgeGraphBuildService {
         UUID graphBatchId = UUID.randomUUID();
         Map<String, Object> target = jdbcTemplate.query(
                 """
-                SELECT source_file_id, doc_id
+                SELECT source_file_id, doc_id, extraction_depth, scope_type, scope_key
                 FROM graph_build_jobs
                 WHERE id = :jobId
                   AND status IN ('failed', 'success')
@@ -314,14 +369,17 @@ public class KnowledgeGraphBuildService {
                     }
                     return Map.of(
                             "sourceFileId", UUID.fromString(rs.getString("source_file_id")),
-                            "docId", UUID.fromString(rs.getString("doc_id"))
+                            "docId", UUID.fromString(rs.getString("doc_id")),
+                            "extractionDepth", rs.getString("extraction_depth"),
+                            "scopeType", rs.getString("scope_type"),
+                            "scopeKey", rs.getString("scope_key") == null ? "" : rs.getString("scope_key")
                     );
                 }
         );
         if (target == null) {
             return Map.of("jobId", jobId, "queued", false, "message", "Only completed graph jobs can be restarted. Queued or running jobs are already active.");
         }
-        clearExtractionCache((UUID) target.get("sourceFileId"), (UUID) target.get("docId"));
+        clearExtractionCache((UUID) target.get("sourceFileId"), (UUID) target.get("docId"), stringValue(target.get("extractionDepth")), stringValue(target.get("scopeType")), stringValue(target.get("scopeKey")));
         jdbcTemplate.update(
                 """
                 UPDATE graph_build_jobs
@@ -381,19 +439,33 @@ public class KnowledgeGraphBuildService {
     }
 
     private int clearExtractionCache(UUID sourceFileId, UUID docId) {
+        return clearExtractionCache(sourceFileId, docId, DEPTH_SKELETON, SCOPE_DOCUMENT, null);
+    }
+
+    private int clearExtractionCache(UUID sourceFileId, UUID docId, String extractionDepth, String scopeType, String scopeKey) {
         return jdbcTemplate.update(
                 """
                 DELETE FROM graph_extraction_batches
                 WHERE source_file_id = :sourceFileId
                   AND doc_id = :docId
+                  AND extraction_depth = :extractionDepth
+                  AND scope_type = :scopeType
+                  AND COALESCE(scope_key, '') = COALESCE(:scopeKey, '')
                 """,
                 new MapSqlParameterSource()
                         .addValue("sourceFileId", sourceFileId)
                         .addValue("docId", docId)
+                        .addValue("extractionDepth", normalizeExtractionDepth(extractionDepth))
+                        .addValue("scopeType", normalizeScopeType(scopeType))
+                        .addValue("scopeKey", blankToNull(scopeKey))
         );
     }
 
     public boolean enqueueManual(UUID sourceFileId) {
+        return enqueueManual(sourceFileId, DEPTH_SKELETON, SCOPE_DOCUMENT, null);
+    }
+
+    public boolean enqueueManual(UUID sourceFileId, String extractionDepth, String scopeType, String scopeKey) {
         Map<String, Object> row = jdbcTemplate.query(
                 """
                 SELECT id, doc_id
@@ -413,51 +485,70 @@ public class KnowledgeGraphBuildService {
         if (row == null) {
             throw new IllegalArgumentException("Source file is missing or has no indexed document: " + sourceFileId);
         }
-        clearExtractionCache((UUID) row.get("sourceFileId"), (UUID) row.get("docId"));
-        return enqueueJob((UUID) row.get("sourceFileId"), (UUID) row.get("docId"), UUID.randomUUID(), "manual");
+        String normalizedDepth = normalizeExtractionDepth(extractionDepth);
+        String normalizedScopeType = normalizeScopeType(scopeType);
+        String normalizedScopeKey = blankToNull(scopeKey);
+        clearExtractionCache((UUID) row.get("sourceFileId"), (UUID) row.get("docId"), normalizedDepth, normalizedScopeType, normalizedScopeKey);
+        return enqueueJob((UUID) row.get("sourceFileId"), (UUID) row.get("docId"), UUID.randomUUID(),
+                DEPTH_ENRICHMENT.equals(normalizedDepth) ? "manual_enrichment" : "manual",
+                normalizedDepth, normalizedScopeType, normalizedScopeKey);
     }
 
     public Map<String, Object> enqueueMissingIndexedFiles(Integer limit, UUID dataSourceId) {
-        return enqueueIndexedFiles(limit, dataSourceId, false, "backfill_missing");
+        return enqueueIndexedFiles(limit, dataSourceId, false, "backfill_missing", DEPTH_SKELETON, SCOPE_DOCUMENT, null);
     }
 
     public Map<String, Object> enqueueIndexedFiles(Integer limit, UUID dataSourceId, boolean rebuildSuccess, String triggerSource) {
+        return enqueueIndexedFiles(limit, dataSourceId, rebuildSuccess, triggerSource, DEPTH_SKELETON, SCOPE_DOCUMENT, null);
+    }
+
+    public Map<String, Object> enqueueIndexedFiles(Integer limit, UUID dataSourceId, boolean rebuildSuccess, String triggerSource, String extractionDepth, String scopeType, String scopeKey) {
         int safeLimit = Math.max(1, Math.min(limit == null ? 200 : limit, 5000));
         boolean filterDataSource = dataSourceId != null;
+        String normalizedDepth = normalizeExtractionDepth(extractionDepth);
+        String normalizedScopeType = normalizeScopeType(scopeType);
+        String normalizedScopeKey = blankToNull(scopeKey);
         UUID graphBatchId = UUID.randomUUID();
-        List<Map<String, Object>> rows = jdbcTemplate.query(
-                """
-                SELECT sf.id AS source_file_id, sf.doc_id
-                FROM source_files sf
-                LEFT JOIN graph_sync_state gss ON gss.source_file_id = sf.id
-                WHERE sf.doc_id IS NOT NULL
-                  AND sf.index_status = 'success'
-                  AND (:filterDataSource = false OR sf.data_source_id = :dataSourceId)
-                  AND (:rebuildSuccess = true OR COALESCE(gss.status, 'missing') <> 'success')
-                  AND NOT EXISTS (
-                      SELECT 1
-                      FROM graph_build_jobs gj
-                      WHERE gj.source_file_id = sf.id
-                        AND gj.status IN ('queued', 'running')
-                  )
-                ORDER BY sf.updated_at ASC NULLS LAST, sf.created_at ASC
-                LIMIT :limit
-                """,
-                new MapSqlParameterSource()
-                        .addValue("filterDataSource", filterDataSource)
-                        .addValue("dataSourceId", dataSourceId)
-                        .addValue("rebuildSuccess", rebuildSuccess)
-                        .addValue("limit", safeLimit),
-                (rs, rowNum) -> Map.<String, Object>of(
-                        "sourceFileId", UUID.fromString(rs.getString("source_file_id")),
-                        "docId", UUID.fromString(rs.getString("doc_id"))
-                )
-        );
+        List<Map<String, Object>> rows = DEPTH_ENRICHMENT.equals(normalizedDepth) && normalizedScopeKey != null
+                ? sourceFilesForEntityScope(normalizedScopeKey, List.of(), safeLimit, dataSourceId)
+                : jdbcTemplate.query(
+                        """
+                        SELECT sf.id AS source_file_id, sf.doc_id
+                        FROM source_files sf
+                        LEFT JOIN graph_sync_state gss ON gss.source_file_id = sf.id
+                        WHERE sf.doc_id IS NOT NULL
+                          AND sf.index_status = 'success'
+                          AND (:filterDataSource = false OR sf.data_source_id = :dataSourceId)
+                          AND (:rebuildSuccess = true OR COALESCE(gss.status, 'missing') <> 'success')
+                          AND NOT EXISTS (
+                              SELECT 1
+                              FROM graph_build_jobs gj
+                              WHERE gj.source_file_id = sf.id
+                                AND gj.status IN ('queued', 'running')
+                          )
+                        ORDER BY sf.updated_at ASC NULLS LAST, sf.created_at ASC
+                        LIMIT :limit
+                        """,
+                        new MapSqlParameterSource()
+                                .addValue("filterDataSource", filterDataSource)
+                                .addValue("dataSourceId", dataSourceId)
+                                .addValue("rebuildSuccess", rebuildSuccess)
+                                .addValue("limit", safeLimit),
+                        (rs, rowNum) -> Map.<String, Object>of(
+                                "sourceFileId", UUID.fromString(rs.getString("source_file_id")),
+                                "docId", UUID.fromString(rs.getString("doc_id"))
+                        )
+                );
         int queued = 0;
         List<String> queuedSourceFileIds = new ArrayList<>();
         for (Map<String, Object> row : rows) {
             UUID sourceFileId = (UUID) row.get("sourceFileId");
-            if (retryLatestCompletedJobForSource(sourceFileId, graphBatchId, rebuildSuccess) || enqueueJob(sourceFileId, (UUID) row.get("docId"), graphBatchId, triggerSource == null || triggerSource.isBlank() ? "batch" : triggerSource)) {
+            if (hasActiveGraphJobForSource(sourceFileId)) {
+                continue;
+            }
+            if (retryLatestCompletedJobForSource(sourceFileId, graphBatchId, rebuildSuccess, normalizedDepth, normalizedScopeType, normalizedScopeKey)
+                    || enqueueJob(sourceFileId, (UUID) row.get("docId"), graphBatchId, triggerSource == null || triggerSource.isBlank() ? "batch" : triggerSource,
+                    normalizedDepth, normalizedScopeType, normalizedScopeKey)) {
                 queued++;
                 queuedSourceFileIds.add(sourceFileId.toString());
             }
@@ -469,8 +560,181 @@ public class KnowledgeGraphBuildService {
                 "limit", safeLimit,
                 "dataSourceId", dataSourceId == null ? "" : dataSourceId.toString(),
                 "rebuildSuccess", rebuildSuccess,
+                "extractionDepth", normalizedDepth,
+                "scopeType", normalizedScopeType,
+                "scopeKey", normalizedScopeKey == null ? "" : normalizedScopeKey,
                 "sourceFileIds", queuedSourceFileIds
         );
+    }
+
+    public Map<String, Object> enqueueQueryEnrichmentScopes(List<String> rawScopes, Integer limit, String triggerSource) {
+        List<String> scopes = normalizeScopeKeys(rawScopes, 50);
+        int safeLimit = Math.max(1, Math.min(limit == null ? 100 : limit, 500));
+        UUID graphBatchId = UUID.randomUUID();
+        if (scopes.isEmpty()) {
+            return Map.of(
+                    "graphBatchId", graphBatchId,
+                    "matched", 0,
+                    "queued", 0,
+                    "limit", safeLimit,
+                    "extractionDepth", DEPTH_ENRICHMENT,
+                    "scopeType", "query",
+                    "scopeCount", 0,
+                    "scopeKeys", List.of(),
+                    "sourceFileIds", List.of()
+            );
+        }
+
+        LinkedHashMap<UUID, Map<String, Object>> rowsBySource = new LinkedHashMap<>();
+        LinkedHashMap<UUID, LinkedHashSet<String>> scopesBySource = new LinkedHashMap<>();
+        LinkedHashMap<UUID, Double> scoresBySource = new LinkedHashMap<>();
+        for (String scope : scopes) {
+            for (Map<String, Object> row : sourceFilesForEntityScope(scope, List.of(), safeLimit, null)) {
+                UUID sourceFileId = (UUID) row.get("sourceFileId");
+                if (sourceFileId == null) {
+                    continue;
+                }
+                rowsBySource.putIfAbsent(sourceFileId, row);
+                scopesBySource.computeIfAbsent(sourceFileId, ignored -> new LinkedHashSet<>()).add(scope);
+                Object rawScore = row.get("score");
+                double score = rawScore instanceof Number number ? number.doubleValue() : 0.0;
+                scoresBySource.merge(sourceFileId, score, Double::sum);
+            }
+        }
+
+        List<Map<String, Object>> rows = rowsBySource.values().stream()
+                .sorted((left, right) -> {
+                    UUID leftId = (UUID) left.get("sourceFileId");
+                    UUID rightId = (UUID) right.get("sourceFileId");
+                    int leftScopes = scopesBySource.getOrDefault(leftId, new LinkedHashSet<>()).size();
+                    int rightScopes = scopesBySource.getOrDefault(rightId, new LinkedHashSet<>()).size();
+                    int byScopeCount = Integer.compare(rightScopes, leftScopes);
+                    if (byScopeCount != 0) {
+                        return byScopeCount;
+                    }
+                    return Double.compare(scoresBySource.getOrDefault(rightId, 0.0), scoresBySource.getOrDefault(leftId, 0.0));
+                })
+                .limit(safeLimit)
+                .toList();
+
+        int queued = 0;
+        int activeSkipped = 0;
+        List<String> queuedSourceFileIds = new ArrayList<>();
+        List<Map<String, Object>> matches = new ArrayList<>();
+        for (Map<String, Object> row : rows) {
+            UUID sourceFileId = (UUID) row.get("sourceFileId");
+            UUID docId = (UUID) row.get("docId");
+            LinkedHashSet<String> hitScopes = scopesBySource.getOrDefault(sourceFileId, new LinkedHashSet<>());
+            String scopedKey = joinScopeKeys(hitScopes);
+            matches.add(Map.of(
+                    "sourceFileId", sourceFileId.toString(),
+                    "docId", docId.toString(),
+                    "scopeKeys", new ArrayList<>(hitScopes),
+                    "score", scoresBySource.getOrDefault(sourceFileId, 0.0)
+            ));
+            if (hasActiveGraphJobForSource(sourceFileId)) {
+                activeSkipped++;
+                continue;
+            }
+            if (retryLatestCompletedJobForSource(sourceFileId, graphBatchId, true, DEPTH_ENRICHMENT, "query", scopedKey)
+                    || enqueueJob(sourceFileId, docId, graphBatchId,
+                    triggerSource == null || triggerSource.isBlank() ? "query_enrichment" : triggerSource,
+                    DEPTH_ENRICHMENT, "query", scopedKey)) {
+                queued++;
+                queuedSourceFileIds.add(sourceFileId.toString());
+            }
+        }
+
+        Map<String, Object> response = new LinkedHashMap<>();
+        response.put("graphBatchId", graphBatchId);
+        response.put("matched", rows.size());
+        response.put("queued", queued);
+        response.put("activeSkipped", activeSkipped);
+        response.put("limit", safeLimit);
+        response.put("extractionDepth", DEPTH_ENRICHMENT);
+        response.put("scopeType", "query");
+        response.put("scopeCount", scopes.size());
+        response.put("scopeKeys", scopes);
+        response.put("sourceFileIds", queuedSourceFileIds);
+        response.put("matches", matches);
+        return response;
+    }
+
+    public Map<String, Object> enqueueEntityEnrichment(String entityId, Integer limit) {
+        if (entityId == null || entityId.isBlank()) {
+            throw new IllegalArgumentException("entityId is required.");
+        }
+        int safeLimit = Math.max(1, Math.min(limit == null ? 100 : limit, 500));
+        Map<String, Object> detail = graphStoreClient.readEntityDetail(entityId, 300);
+        Map<String, Object> entity = mapValue(detail.get("entity"));
+        String scopeKey = firstNonBlank(stringValue(entity.get("label")), stringValue(entity.get("clusterName")), entityId);
+        List<UUID> docIds = collectEntityDocIds(detail);
+        List<Map<String, Object>> graphRows = sourceFilesForDocs(docIds, safeLimit);
+        List<Map<String, Object>> recallRows = sourceFilesForEntityScope(scopeKey, docIds, safeLimit, null);
+        List<Map<String, Object>> sourceRows = mergeSourceRows(graphRows, recallRows, safeLimit);
+        UUID graphBatchId = UUID.randomUUID();
+        int queued = 0;
+        List<String> queuedSourceFileIds = new ArrayList<>();
+        for (Map<String, Object> row : sourceRows) {
+            UUID sourceFileId = (UUID) row.get("sourceFileId");
+            UUID docId = (UUID) row.get("docId");
+            if (retryLatestCompletedJobForSource(sourceFileId, graphBatchId, true, DEPTH_ENRICHMENT, "entity", scopeKey)
+                    || enqueueJob(sourceFileId, docId, graphBatchId, "entity_enrichment", DEPTH_ENRICHMENT, "entity", scopeKey)) {
+                queued++;
+                queuedSourceFileIds.add(sourceFileId.toString());
+            }
+        }
+        Map<String, Object> response = new LinkedHashMap<>();
+        response.put("graphBatchId", graphBatchId);
+        response.put("entityId", entityId);
+        response.put("scopeKey", scopeKey);
+        response.put("extractionDepth", DEPTH_ENRICHMENT);
+        response.put("scopeType", "entity");
+        response.put("matched", sourceRows.size());
+        response.put("graphKnownMatched", graphRows.size());
+        response.put("indexRecalled", recallRows.size());
+        response.put("queued", queued);
+        response.put("limit", safeLimit);
+        response.put("sourceFileIds", queuedSourceFileIds);
+        return response;
+    }
+
+    public Map<String, Object> graphBatchStatus(UUID graphBatchId) {
+        if (graphBatchId == null) {
+            return Map.of("graphBatchId", "", "total", 0, "active", 0, "success", 0, "failed", 0, "completed", true);
+        }
+        Map<String, Object> row = jdbcTemplate.query(
+                """
+                SELECT count(*) AS total,
+                       count(*) FILTER (WHERE status IN ('queued', 'running')) AS active,
+                       count(*) FILTER (WHERE status = 'success') AS success,
+                       count(*) FILTER (WHERE status = 'failed') AS failed
+                FROM graph_build_jobs
+                WHERE graph_batch_id = :graphBatchId
+                """,
+                new MapSqlParameterSource("graphBatchId", graphBatchId),
+                rs -> {
+                    if (!rs.next()) {
+                        return Map.of("total", 0, "active", 0, "success", 0, "failed", 0);
+                    }
+                    return Map.<String, Object>of(
+                            "total", rs.getInt("total"),
+                            "active", rs.getInt("active"),
+                            "success", rs.getInt("success"),
+                            "failed", rs.getInt("failed")
+                    );
+                }
+        );
+        Map<String, Object> result = new LinkedHashMap<>(row);
+        int total = intValue(row.get("total"), 0);
+        int active = intValue(row.get("active"), 0);
+        result.put("graphBatchId", graphBatchId.toString());
+        result.put("completed", total == 0 || active == 0);
+        return result;
+    }
+
+    public boolean graphBatchCompleted(UUID graphBatchId) {
+        return booleanValue(graphBatchStatus(graphBatchId).get("completed"), true);
     }
 
     public Map<String, Object> startFusion(UUID graphBatchId) {
@@ -776,7 +1040,7 @@ public class KnowledgeGraphBuildService {
         );
     }
 
-    private boolean retryLatestCompletedJobForSource(UUID sourceFileId, UUID graphBatchId, boolean includeSuccess) {
+    private boolean retryLatestCompletedJobForSource(UUID sourceFileId, UUID graphBatchId, boolean includeSuccess, String extractionDepth, String scopeType, String scopeKey) {
         UUID jobId = jdbcTemplate.query(
                 """
                 SELECT id
@@ -784,11 +1048,17 @@ public class KnowledgeGraphBuildService {
                 WHERE source_file_id = :sourceFileId
                   AND status IN ('failed', 'success')
                   AND (:includeSuccess = true OR status = 'failed')
+                  AND extraction_depth = :extractionDepth
+                  AND scope_type = :scopeType
+                  AND COALESCE(scope_key, '') = COALESCE(:scopeKey, '')
                 ORDER BY created_at DESC
                 LIMIT 1
                 """,
                 new MapSqlParameterSource("sourceFileId", sourceFileId)
-                        .addValue("includeSuccess", includeSuccess),
+                        .addValue("includeSuccess", includeSuccess)
+                        .addValue("extractionDepth", normalizeExtractionDepth(extractionDepth))
+                        .addValue("scopeType", normalizeScopeType(scopeType))
+                        .addValue("scopeKey", blankToNull(scopeKey)),
                 rs -> rs.next() ? UUID.fromString(rs.getString("id")) : null
         );
         if (jobId == null) {
@@ -800,7 +1070,7 @@ public class KnowledgeGraphBuildService {
     private boolean queueExistingCompletedJob(UUID jobId, UUID graphBatchId) {
         Map<String, Object> target = jdbcTemplate.query(
                 """
-                SELECT source_file_id, doc_id
+                SELECT source_file_id, doc_id, extraction_depth, scope_type, scope_key
                 FROM graph_build_jobs
                 WHERE id = :jobId
                 LIMIT 1
@@ -812,14 +1082,18 @@ public class KnowledgeGraphBuildService {
                     }
                     return Map.of(
                             "sourceFileId", UUID.fromString(rs.getString("source_file_id")),
-                            "docId", UUID.fromString(rs.getString("doc_id"))
+                            "docId", UUID.fromString(rs.getString("doc_id")),
+                            "extractionDepth", rs.getString("extraction_depth"),
+                            "scopeType", rs.getString("scope_type"),
+                            "scopeKey", rs.getString("scope_key") == null ? "" : rs.getString("scope_key")
                     );
                 }
         );
         if (target == null) {
             return false;
         }
-        clearExtractionCache((UUID) target.get("sourceFileId"), (UUID) target.get("docId"));
+        clearExtractionCache((UUID) target.get("sourceFileId"), (UUID) target.get("docId"),
+                stringValue(target.get("extractionDepth")), stringValue(target.get("scopeType")), stringValue(target.get("scopeKey")));
         int updated = jdbcTemplate.update(
                 """
                 UPDATE graph_build_jobs
@@ -850,6 +1124,31 @@ public class KnowledgeGraphBuildService {
     private String currentExtractionModel() {
         AppProperties.ExtractionLlm llm = appProperties.knowledgeGraph() == null ? null : appProperties.knowledgeGraph().extractionLlm();
         return llm == null ? "" : stringValue(llm.model());
+    }
+
+    private KnowledgeGraphExtractionService.ExtractionOptions extractionOptions(String extractionDepth, String scopeType, String scopeKey) {
+        AppProperties.KnowledgeGraph config = appProperties.knowledgeGraph();
+        String normalizedDepth = normalizeExtractionDepth(extractionDepth);
+        if (DEPTH_ENRICHMENT.equals(normalizedDepth)) {
+            return new KnowledgeGraphExtractionService.ExtractionOptions(
+                    DEPTH_ENRICHMENT,
+                    normalizeScopeType(scopeType),
+                    blankToNull(scopeKey),
+                    config == null ? 120 : Math.max(1, config.maxChunksPerDocument()),
+                    config == null ? 8 : Math.max(1, config.minSelectedChunksPerDocument()),
+                    config == null ? 24 : Math.max(12, config.maxSelectedChunksPerDocument()),
+                    config == null ? 6 : Math.max(1, config.chunkBatchSize())
+            );
+        }
+        return new KnowledgeGraphExtractionService.ExtractionOptions(
+                DEPTH_SKELETON,
+                SCOPE_DOCUMENT,
+                null,
+                null,
+                null,
+                null,
+                null
+        );
     }
 
     public void runNextBatch() {
@@ -904,7 +1203,8 @@ public class KnowledgeGraphBuildService {
                     updated_at = CURRENT_TIMESTAMP
                 FROM picked
                 WHERE j.id = picked.id
-                RETURNING j.id, j.source_file_id, j.doc_id, j.graph_batch_id
+                RETURNING j.id, j.source_file_id, j.doc_id, j.graph_batch_id,
+                          j.extraction_depth, j.scope_type, j.scope_key
                 """,
                 new MapSqlParameterSource(),
                 rs -> {
@@ -917,6 +1217,9 @@ public class KnowledgeGraphBuildService {
                     item.put("docId", UUID.fromString(rs.getString("doc_id")));
                     String graphBatchId = rs.getString("graph_batch_id");
                     item.put("graphBatchId", graphBatchId == null ? UUID.randomUUID() : UUID.fromString(graphBatchId));
+                    item.put("extractionDepth", rs.getString("extraction_depth"));
+                    item.put("scopeType", rs.getString("scope_type"));
+                    item.put("scopeKey", rs.getString("scope_key"));
                     return item;
                 }
         ));
@@ -927,15 +1230,27 @@ public class KnowledgeGraphBuildService {
         UUID sourceFileId = (UUID) job.get("sourceFileId");
         UUID docId = (UUID) job.get("docId");
         UUID graphBatchId = (UUID) job.get("graphBatchId");
+        String extractionDepth = normalizeExtractionDepth(stringValue(job.get("extractionDepth")));
+        String scopeType = normalizeScopeType(stringValue(job.get("scopeType")));
+        String scopeKey = blankToNull(stringValue(job.get("scopeKey")));
         try {
             markStage(jobId, "extracting_local_graph");
-            Map<String, Object> localGraph = extractionService.extract(docId, sourceFileId, progress -> markExtractionProgress(jobId, progress));
+            Map<String, Object> localGraph = extractionService.extract(docId, sourceFileId,
+                    extractionOptions(extractionDepth, scopeType, scopeKey),
+                    progress -> markExtractionProgress(jobId, progress));
             localGraph.put("fusionBatchId", graphBatchId.toString());
+            localGraph.put("extractionDepth", extractionDepth);
+            localGraph.put("scopeType", scopeType);
+            localGraph.put("scopeKey", scopeKey == null ? "" : scopeKey);
             markStage(jobId, "normalizing_candidates");
             normalizeEntityTypesWithTemplates(localGraph);
             saveLocalGraph(jobId, localGraph);
             markStage(jobId, "writing_global_graph");
             Map<String, Object> summary = graphStoreClient.writeLocalGraph(localGraph);
+            summary = new LinkedHashMap<>(summary);
+            summary.put("extractionDepth", extractionDepth);
+            summary.put("scopeType", scopeType);
+            summary.put("scopeKey", scopeKey == null ? "" : scopeKey);
             markSuccess(jobId, sourceFileId, docId, summary);
         } catch (Exception ex) {
             markFailed(jobId, sourceFileId, ex.getMessage());
@@ -1185,6 +1500,314 @@ public class KnowledgeGraphBuildService {
         return value == null ? "" : String.valueOf(value).trim();
     }
 
+    @SuppressWarnings("unchecked")
+    private Map<String, Object> mapValue(Object value) {
+        return value instanceof Map<?, ?> map ? (Map<String, Object>) map : Map.of();
+    }
+
+    private String firstNonBlank(String... values) {
+        if (values == null) {
+            return "";
+        }
+        for (String value : values) {
+            String normalized = stringValue(value);
+            if (!normalized.isBlank()) {
+                return normalized;
+            }
+        }
+        return "";
+    }
+
+    private List<UUID> collectEntityDocIds(Map<String, Object> detail) {
+        LinkedHashSet<UUID> ids = new LinkedHashSet<>();
+        collectDocIds(ids, detail.get("descriptions"));
+        collectDocIds(ids, detail.get("states"));
+        collectDocIds(ids, detail.get("connections"));
+        collectDocIds(ids, detail.get("transitions"));
+        collectDocIds(ids, detail.get("attributes"));
+        return new ArrayList<>(ids);
+    }
+
+    private void collectDocIds(LinkedHashSet<UUID> ids, Object value) {
+        if (value instanceof Map<?, ?> map) {
+            Object docId = map.get("docId");
+            if (docId != null) {
+                addDocId(ids, docId);
+            }
+            Object docIds = map.get("docIds");
+            if (docIds != null) {
+                collectDocIds(ids, docIds);
+            }
+            Object sources = map.get("sources");
+            if (sources != null) {
+                collectDocIds(ids, sources);
+            }
+            Object connections = map.get("connections");
+            if (connections != null) {
+                collectDocIds(ids, connections);
+            }
+            return;
+        }
+        if (value instanceof Collection<?> collection) {
+            for (Object item : collection) {
+                collectDocIds(ids, item);
+            }
+            return;
+        }
+        addDocId(ids, value);
+    }
+
+    private void addDocId(LinkedHashSet<UUID> ids, Object value) {
+        String raw = stringValue(value);
+        if (raw.isBlank()) {
+            return;
+        }
+        try {
+            ids.add(UUID.fromString(raw));
+        } catch (IllegalArgumentException ignored) {
+            // Ignore non-UUID source markers in graph evidence.
+        }
+    }
+
+    private List<Map<String, Object>> sourceFilesForDocs(List<UUID> docIds, int limit) {
+        if (docIds == null || docIds.isEmpty()) {
+            return List.of();
+        }
+        return jdbcTemplate.query(
+                """
+                SELECT id AS source_file_id, doc_id
+                FROM source_files
+                WHERE doc_id IN (:docIds)
+                  AND index_status = 'success'
+                ORDER BY updated_at DESC NULLS LAST, created_at DESC
+                LIMIT :limit
+                """,
+                new MapSqlParameterSource()
+                        .addValue("docIds", docIds)
+                        .addValue("limit", Math.max(1, limit)),
+                (rs, rowNum) -> Map.<String, Object>of(
+                        "sourceFileId", UUID.fromString(rs.getString("source_file_id")),
+                        "docId", UUID.fromString(rs.getString("doc_id"))
+                )
+        );
+    }
+
+    private List<Map<String, Object>> sourceFilesForEntityScope(String scopeKey, List<UUID> knownDocIds, int limit, UUID dataSourceId) {
+        String query = stringValue(scopeKey);
+        if (query.isBlank()) {
+            return List.of();
+        }
+        int safeLimit = Math.max(1, limit);
+        boolean hasKnownDocs = knownDocIds != null && !knownDocIds.isEmpty();
+        boolean filterDataSource = dataSourceId != null;
+        return jdbcTemplate.query(
+                """
+                WITH query AS (
+                    SELECT :scopeKey AS raw,
+                           lower(:scopeKey) AS lower_raw,
+                           :likePattern AS like_pattern,
+                           plainto_tsquery('simple', :scopeKey) AS tsq
+                ),
+                document_hits AS (
+                    SELECT sf.id AS source_file_id,
+                           sf.doc_id,
+                           140.0
+                             + CASE WHEN lower(COALESCE(d.title, '')) LIKE query.like_pattern THEN 80.0 ELSE 0.0 END
+                             + CASE WHEN lower(COALESCE(d.source_filename, '')) LIKE query.like_pattern THEN 60.0 ELSE 0.0 END
+                             + CASE WHEN lower(COALESCE(d.metadata_json::text, '')) LIKE query.like_pattern THEN 30.0 ELSE 0.0 END
+                             + ts_rank_cd(COALESCE(d.search_tsv, ''::tsvector), query.tsq) * 40.0 AS score
+                    FROM source_files sf
+                    JOIN documents d ON d.id = sf.doc_id
+                    CROSS JOIN query
+                    WHERE sf.doc_id IS NOT NULL
+                      AND sf.index_status = 'success'
+                      AND (:filterDataSource = false OR sf.data_source_id = :dataSourceId)
+                      AND (
+                          lower(COALESCE(d.title, '')) LIKE query.like_pattern
+                          OR lower(COALESCE(d.source_filename, '')) LIKE query.like_pattern
+                          OR lower(COALESCE(d.metadata_json::text, '')) LIKE query.like_pattern
+                          OR COALESCE(d.search_tsv, ''::tsvector) @@ query.tsq
+                      )
+                ),
+                chunk_hits AS (
+                    SELECT sf.id AS source_file_id,
+                           sf.doc_id,
+                           MAX(
+                               70.0
+                               + CASE WHEN lower(COALESCE(c.title, '')) LIKE query.like_pattern THEN 55.0 ELSE 0.0 END
+                               + CASE WHEN lower(COALESCE(c.content, '')) LIKE query.like_pattern THEN 28.0 ELSE 0.0 END
+                               + CASE WHEN lower(COALESCE(c.metadata_json::text, '')) LIKE query.like_pattern THEN 20.0 ELSE 0.0 END
+                               + ts_rank_cd(COALESCE(c.search_tsv, ''::tsvector), query.tsq) * 35.0
+                           ) AS score
+                    FROM source_files sf
+                    JOIN chunks c ON c.doc_id = sf.doc_id
+                    CROSS JOIN query
+                    WHERE sf.doc_id IS NOT NULL
+                      AND sf.index_status = 'success'
+                      AND (:filterDataSource = false OR sf.data_source_id = :dataSourceId)
+                      AND (
+                          lower(COALESCE(c.title, '')) LIKE query.like_pattern
+                          OR lower(COALESCE(c.content, '')) LIKE query.like_pattern
+                          OR lower(COALESCE(c.metadata_json::text, '')) LIKE query.like_pattern
+                          OR COALESCE(c.search_tsv, ''::tsvector) @@ query.tsq
+                      )
+                    GROUP BY sf.id, sf.doc_id
+                ),
+                ku_hits AS (
+                    SELECT sf.id AS source_file_id,
+                           sf.doc_id,
+                           MAX(
+                               90.0
+                               + CASE WHEN lower(COALESCE(ku.subject, '')) LIKE query.like_pattern THEN 70.0 ELSE 0.0 END
+                               + CASE WHEN lower(COALESCE(ku.indicator, '')) LIKE query.like_pattern THEN 60.0 ELSE 0.0 END
+                               + CASE WHEN lower(COALESCE(ku.title, '')) LIKE query.like_pattern THEN 45.0 ELSE 0.0 END
+                               + CASE WHEN lower(COALESCE(ku.normalized_text, ku.content, '')) LIKE query.like_pattern THEN 35.0 ELSE 0.0 END
+                               + ts_rank_cd(COALESCE(ku.search_tsv, ''::tsvector), query.tsq) * 45.0
+                           ) AS score
+                    FROM source_files sf
+                    JOIN knowledge_units ku ON ku.doc_id = sf.doc_id
+                    CROSS JOIN query
+                    WHERE sf.doc_id IS NOT NULL
+                      AND sf.index_status = 'success'
+                      AND (:filterDataSource = false OR sf.data_source_id = :dataSourceId)
+                      AND (
+                          lower(COALESCE(ku.subject, '')) LIKE query.like_pattern
+                          OR lower(COALESCE(ku.indicator, '')) LIKE query.like_pattern
+                          OR lower(COALESCE(ku.title, '')) LIKE query.like_pattern
+                          OR lower(COALESCE(ku.normalized_text, ku.content, '')) LIKE query.like_pattern
+                          OR COALESCE(ku.search_tsv, ''::tsvector) @@ query.tsq
+                      )
+                    GROUP BY sf.id, sf.doc_id
+                ),
+                combined AS (
+                    SELECT * FROM document_hits
+                    UNION ALL
+                    SELECT * FROM chunk_hits
+                    UNION ALL
+                    SELECT * FROM ku_hits
+                )
+                SELECT source_file_id, doc_id, MAX(score) AS score
+                FROM combined
+                WHERE (:hasKnownDocs = false OR doc_id NOT IN (:knownDocIds))
+                GROUP BY source_file_id, doc_id
+                ORDER BY MAX(score) DESC, doc_id
+                LIMIT :limit
+                """,
+                new MapSqlParameterSource()
+                        .addValue("scopeKey", query)
+                        .addValue("likePattern", "%" + query.toLowerCase(Locale.ROOT) + "%")
+                        .addValue("hasKnownDocs", hasKnownDocs)
+                        .addValue("knownDocIds", hasKnownDocs ? knownDocIds : List.of(new UUID(0L, 0L)))
+                        .addValue("filterDataSource", filterDataSource)
+                        .addValue("dataSourceId", dataSourceId)
+                        .addValue("limit", safeLimit),
+                (rs, rowNum) -> Map.<String, Object>of(
+                        "sourceFileId", UUID.fromString(rs.getString("source_file_id")),
+                        "docId", UUID.fromString(rs.getString("doc_id")),
+                        "source", "index_recall",
+                        "score", rs.getDouble("score")
+                )
+        );
+    }
+
+    private List<Map<String, Object>> mergeSourceRows(List<Map<String, Object>> graphRows, List<Map<String, Object>> recallRows, int limit) {
+        LinkedHashMap<UUID, Map<String, Object>> merged = new LinkedHashMap<>();
+        for (Map<String, Object> row : graphRows == null ? List.<Map<String, Object>>of() : graphRows) {
+            UUID sourceFileId = (UUID) row.get("sourceFileId");
+            if (sourceFileId != null) {
+                merged.putIfAbsent(sourceFileId, row);
+            }
+        }
+        for (Map<String, Object> row : recallRows == null ? List.<Map<String, Object>>of() : recallRows) {
+            UUID sourceFileId = (UUID) row.get("sourceFileId");
+            if (sourceFileId != null) {
+                merged.putIfAbsent(sourceFileId, row);
+            }
+            if (merged.size() >= Math.max(1, limit)) {
+                break;
+            }
+        }
+        return new ArrayList<>(merged.values()).stream()
+                .limit(Math.max(1, limit))
+                .toList();
+    }
+
+    private List<String> normalizeScopeKeys(Collection<String> rawScopes, int maxScopes) {
+        if (rawScopes == null || rawScopes.isEmpty()) {
+            return List.of();
+        }
+        LinkedHashSet<String> normalized = new LinkedHashSet<>();
+        for (String raw : rawScopes) {
+            String value = stringValue(raw)
+                    .replace('；', ';')
+                    .replace('，', ',');
+            for (String part : value.split("[;,\\n\\r\\t]+")) {
+                String scope = part.trim();
+                if (!scope.isBlank()) {
+                    normalized.add(truncate(scope, 120));
+                }
+                if (normalized.size() >= Math.max(1, maxScopes)) {
+                    return new ArrayList<>(normalized);
+                }
+            }
+        }
+        return new ArrayList<>(normalized);
+    }
+
+    private String joinScopeKeys(Collection<String> scopes) {
+        List<String> normalized = normalizeScopeKeys(scopes, 12);
+        StringBuilder builder = new StringBuilder();
+        for (String scope : normalized) {
+            String next = builder.isEmpty() ? scope : "；" + scope;
+            if (builder.length() + next.length() > 240) {
+                break;
+            }
+            builder.append(next);
+        }
+        if (builder.isEmpty() && !normalized.isEmpty()) {
+            return truncate(normalized.getFirst(), 240);
+        }
+        return builder.toString();
+    }
+
+    private boolean hasActiveGraphJobForSource(UUID sourceFileId) {
+        if (sourceFileId == null) {
+            return false;
+        }
+        Integer count = jdbcTemplate.queryForObject(
+                """
+                SELECT count(*)
+                FROM graph_build_jobs
+                WHERE source_file_id = :sourceFileId
+                  AND status IN ('queued', 'running')
+                """,
+                new MapSqlParameterSource("sourceFileId", sourceFileId),
+                Integer.class
+        );
+        return count != null && count > 0;
+    }
+
+    private String blankToNull(String value) {
+        String normalized = stringValue(value);
+        return normalized.isBlank() ? null : normalized;
+    }
+
+    private String normalizeExtractionDepth(String value) {
+        String normalized = stringValue(value).toLowerCase(Locale.ROOT);
+        return switch (normalized) {
+            case "deep", "detail", "enrich", "enrichment" -> DEPTH_ENRICHMENT;
+            default -> DEPTH_SKELETON;
+        };
+    }
+
+    private String normalizeScopeType(String value) {
+        String normalized = stringValue(value).toLowerCase(Locale.ROOT);
+        return switch (normalized) {
+            case "entity", "section", "query" -> normalized;
+            default -> SCOPE_DOCUMENT;
+        };
+    }
+
     private String normalizeTypeToken(String value) {
         String raw = value == null ? "" : value.trim().toLowerCase(Locale.ROOT);
         return Normalizer.normalize(raw, Normalizer.Form.NFKC)
@@ -1350,6 +1973,23 @@ public class KnowledgeGraphBuildService {
         return Boolean.parseBoolean(String.valueOf(value));
     }
 
+    private boolean runtimeFlag(String key, boolean fallback) {
+        List<String> values = jdbcTemplate.queryForList(
+                """
+                SELECT setting_value
+                FROM graph_runtime_settings
+                WHERE setting_key = :key
+                """,
+                new MapSqlParameterSource("key", key),
+                String.class
+        );
+        if (values.isEmpty()) {
+            return fallback;
+        }
+        String value = values.getFirst();
+        return value == null ? fallback : Boolean.parseBoolean(value.trim());
+    }
+
     private int intValue(Object value, int fallback) {
         if (value instanceof Number number) {
             return number.intValue();
@@ -1368,3 +2008,4 @@ public class KnowledgeGraphBuildService {
         return value.length() > maxLength ? value.substring(0, maxLength) : value;
     }
 }
+

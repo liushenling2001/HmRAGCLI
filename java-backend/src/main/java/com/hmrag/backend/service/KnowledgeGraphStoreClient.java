@@ -188,6 +188,160 @@ public class KnowledgeGraphStoreClient {
         );
     }
 
+    public Map<String, Object> readTopConnectedGraphView(int targetEntities) {
+        if (!isConfigured()) {
+            throw new IllegalStateException("Knowledge graph store is disabled or not configured.");
+        }
+        int safeTargetEntities = Math.max(10, Math.min(targetEntities, 120));
+        int candidateLimit = Math.min(600, safeTargetEntities * 6);
+        JsonNode entityRoot = query("""
+                MATCH (e:Entity)
+                CALL {
+                    WITH e
+                    MATCH (e)-[:HAS_STATE]->(:EntityState)-[:SUBJECT_OF]->(outFact:Fact)
+                    WHERE coalesce(outFact.factKind, 'relation_fact') = 'relation_fact'
+                    RETURN count(DISTINCT outFact) AS outgoingFacts
+                }
+                CALL {
+                    WITH e
+                    MATCH (e)-[:HAS_STATE]->(:EntityState)<-[:OBJECT_OF]-(inFact:Fact)
+                    WHERE coalesce(inFact.factKind, 'relation_fact') = 'relation_fact'
+                    RETURN count(DISTINCT inFact) AS incomingFacts
+                }
+                CALL {
+                    WITH e
+                    OPTIONAL MATCH (e)-[:HAS_STATE]->(state:EntityState)
+                    RETURN count(DISTINCT CASE
+                        WHEN coalesce(state.stateKind, '') <> 'default_anchor'
+                        THEN coalesce(state.stateClusterKey, state.stateKey)
+                    END) AS stateCount
+                }
+                CALL {
+                    WITH e
+                    OPTIONAL MATCH (e)-[:HAS_STATE]->(:EntityState)-[outTransition:EVOLVES_TO]->(:EntityState)<-[:HAS_STATE]-(:Entity)
+                    OPTIONAL MATCH (e)-[:HAS_STATE]->(:EntityState)<-[inTransition:EVOLVES_TO]-(:EntityState)<-[:HAS_STATE]-(:Entity)
+                    RETURN count(DISTINCT outTransition) + count(DISTINCT inTransition) AS transitionCount
+                }
+                OPTIONAL MATCH (e)-[:MEMBER_OF]->(cluster:EntityCluster)
+                WITH e, cluster, outgoingFacts + incomingFacts AS connectionCount, stateCount, transitionCount
+                WHERE connectionCount > 0
+                RETURN e.canonicalKey AS id,
+                       e.canonicalName AS name,
+                       e.entityType AS type,
+                       cluster.canonicalName AS clusterName,
+                       cluster.fusionKey AS clusterKey,
+                       stateCount,
+                       transitionCount,
+                       connectionCount,
+                       e.updatedAt AS updatedAt
+                ORDER BY connectionCount DESC, stateCount DESC, name
+                LIMIT $limit
+                """, Map.of("limit", candidateLimit));
+        Map<String, Map<String, Object>> nodes = new LinkedHashMap<>();
+        List<Map<String, Object>> topEntities = new ArrayList<>();
+        JsonNode entityData = entityRoot.path("results").path(0).path("data");
+        if (entityData.isArray()) {
+            for (JsonNode rowNode : entityData) {
+                JsonNode row = rowNode.path("row");
+                if (!row.isArray() || row.size() < 9) {
+                    continue;
+                }
+                String id = textAt(row, 0);
+                String name = textAt(row, 1);
+                String type = textAt(row, 2);
+                if (id.isBlank()
+                        || isHiddenGraphEntity(name, type)
+                        || isValueLikeGraphEntity(name, type)) {
+                    continue;
+                }
+                int stateCount = intAt(row, 5);
+                int transitionCount = intAt(row, 6);
+                int connectionCount = intAt(row, 7);
+                Map<String, Object> node = graphNode(id, name, type, textAt(row, 3), textAt(row, 4), stateCount, transitionCount);
+                node.put("connectionCount", connectionCount);
+                nodes.put(id, node);
+                Map<String, Object> entity = new LinkedHashMap<>();
+                entity.put("id", id);
+                entity.put("label", name);
+                entity.put("type", type);
+                entity.put("clusterName", textAt(row, 3));
+                entity.put("clusterKey", textAt(row, 4));
+                entity.put("stateCount", stateCount);
+                entity.put("factCount", connectionCount);
+                entity.put("transitionCount", transitionCount);
+                entity.put("updatedAt", textAt(row, 8));
+                entity.put("hasEntityState", stateCount > 0);
+                entity.put("hasMultipleStates", stateCount > 1);
+                entity.put("hasEvolution", transitionCount > 0);
+                topEntities.add(entity);
+                if (nodes.size() >= safeTargetEntities) {
+                    break;
+                }
+            }
+        }
+        List<String> selectedIds = new ArrayList<>(nodes.keySet());
+        List<Map<String, Object>> edges = new ArrayList<>();
+        if (!selectedIds.isEmpty()) {
+            JsonNode edgeRoot = query("""
+                    MATCH (subjectEntity:Entity)-[:HAS_STATE]->(subject:EntityState)-[:SUBJECT_OF]->(fact:Fact)-[:OBJECT_OF]->(object:EntityState)<-[:HAS_STATE]-(objectEntity:Entity)
+                    WHERE coalesce(fact.factKind, 'relation_fact') = 'relation_fact'
+                      AND subjectEntity.canonicalKey IN $ids
+                      AND objectEntity.canonicalKey IN $ids
+                    OPTIONAL MATCH (fact)-[:SUPPORTED_BY]->(evidence:Evidence)
+                    RETURN subjectEntity.canonicalKey AS sourceId,
+                           objectEntity.canonicalKey AS targetId,
+                           fact.factKey AS edgeId,
+                           fact.relationType AS relationType,
+                           fact.statement AS statement,
+                           fact.confidence AS confidence,
+                           fact.updatedAt AS updatedAt,
+                           collect(DISTINCT evidence.docId)[0..3] AS docIds
+                    ORDER BY updatedAt DESC
+                    LIMIT $limit
+                    """, Map.of("ids", selectedIds, "limit", Math.min(1000, safeTargetEntities * 16)));
+            JsonNode edgeData = edgeRoot.path("results").path(0).path("data");
+            if (edgeData.isArray()) {
+                for (JsonNode rowNode : edgeData) {
+                    JsonNode row = rowNode.path("row");
+                    if (!row.isArray() || row.size() < 8) {
+                        continue;
+                    }
+                    String sourceId = textAt(row, 0);
+                    String targetId = textAt(row, 1);
+                    if (!nodes.containsKey(sourceId) || !nodes.containsKey(targetId)) {
+                        continue;
+                    }
+                    List<String> docIds = new ArrayList<>();
+                    JsonNode docIdNode = row.path(7);
+                    if (docIdNode.isArray()) {
+                        for (JsonNode item : docIdNode) {
+                            if (!item.isNull() && !item.asText("").isBlank()) {
+                                docIds.add(item.asText());
+                            }
+                        }
+                    }
+                    edges.add(Map.of(
+                            "id", blankTo(textAt(row, 2), sourceId + "->" + targetId + ":" + edges.size()),
+                            "source", sourceId,
+                            "target", targetId,
+                            "type", blankTo(textAt(row, 3), "related_to"),
+                            "label", blankTo(textAt(row, 4), textAt(row, 3)),
+                            "confidence", row.path(5).isNumber() ? row.path(5).asDouble() : 0.0d,
+                            "docIds", docIds
+                    ));
+                }
+            }
+        }
+        return Map.of(
+                "nodes", new ArrayList<>(nodes.values()),
+                "edges", edges,
+                "stats", readGraphStats(),
+                "targetEntities", safeTargetEntities,
+                "scope", "top_connected",
+                "topEntities", topEntities
+        );
+    }
+
     public Map<String, Object> readGraphStats() {
         if (!isConfigured()) {
             throw new IllegalStateException("Knowledge graph store is disabled or not configured.");
@@ -1518,6 +1672,13 @@ public class KnowledgeGraphStoreClient {
         summary.put("batchCount", metadata.getOrDefault("batchCount", 0));
         summary.put("failedBatchCount", metadata.getOrDefault("failedBatchCount", 0));
         summary.put("chunkBatchSize", metadata.getOrDefault("chunkBatchSize", 0));
+        summary.put("selectedChunkCount", metadata.getOrDefault("selectedChunkCount", 0));
+        summary.put("skippedChunkCount", metadata.getOrDefault("skippedChunkCount", 0));
+        summary.put("structuralEntities", metadata.getOrDefault("structuralEntities", 0));
+        summary.put("structuralFacts", metadata.getOrDefault("structuralFacts", 0));
+        summary.put("extractionDepth", metadata.getOrDefault("extractionDepth", "skeleton"));
+        summary.put("scopeType", metadata.getOrDefault("scopeType", "document"));
+        summary.put("scopeKey", metadata.getOrDefault("scopeKey", ""));
         return summary;
     }
 
@@ -1881,14 +2042,13 @@ public class KnowledgeGraphStoreClient {
                   AND NOT e.fusionKey IN $excludedFusionKeys
                   AND NOT coalesce(e.entityType, '') IN $excludedFusionTypes
                 WITH e.fusionKey AS fusionKey,
-                     coalesce(e.fusionTypeGroup, 'other') AS fusionTypeGroup,
                      collect(e) AS entities
                 WHERE size(entities) > 1
                   AND size(entities) <= $maxGroupSize
                   AND none(entity IN entities WHERE coalesce(entity.entityType, '') IN $excludedFusionTypes)
                   AND any(entity IN entities WHERE coalesce(entity.fusionStatus, 'candidate') <> 'fused')
                   AND ($batchScoped = false OR any(entity IN entities WHERE entity.fusionBatchId = $fusionBatchId AND coalesce(entity.fusionStatus, 'candidate') <> 'fused'))
-                WITH fusionKey, fusionTypeGroup, entities,
+                WITH fusionKey, entities,
                      reduce(best = head(entities), candidate IN entities |
                          CASE
                              WHEN coalesce(candidate.fusionRelationCount, 0) > coalesce(best.fusionRelationCount, 0) THEN candidate
@@ -1900,13 +2060,13 @@ public class KnowledgeGraphStoreClient {
                              ELSE best
                          END
                      ) AS canonical
-                MERGE (cluster:EntityCluster {fusionKey: fusionTypeGroup + ':' + fusionKey})
+                MERGE (cluster:EntityCluster {fusionKey: 'exact:' + fusionKey})
                 ON CREATE SET cluster.id = randomUUID(), cluster.createdAt = $now
                 SET cluster.entityType = coalesce(canonical.entityType, ''),
                     cluster.canonicalName = canonical.canonicalName,
                     cluster.canonicalKey = canonical.canonicalKey,
                     cluster.rawFusionKey = fusionKey,
-                    cluster.fusionTypeGroup = fusionTypeGroup,
+                    cluster.fusionTypeGroup = 'exact_name',
                     cluster.memberCount = size(entities),
                     cluster.fusionMode = $mode,
                     cluster.updatedAt = $now
@@ -1932,7 +2092,7 @@ public class KnowledgeGraphStoreClient {
                 ON CREATE SET same.createdAt = $now
                 SET same.method = $mode,
                     same.confidence = 0.85,
-                    same.reason = 'normalized name/type fusion',
+                                same.reason = 'exact normalized name fusion',
                     same.updatedAt = $now
                 RETURN count(DISTINCT cluster) AS groups, count(same) AS sameAsEdges
                 """,
@@ -3132,7 +3292,8 @@ public class KnowledgeGraphStoreClient {
                         WHERE toLower(coalesce(anchor.entityType, '')) IN $anchorTypes
                           AND size(coalesce(anchor.canonicalName, '')) >= 3
                           AND size(coalesce(anchor.canonicalName, '')) <= 30
-                          AND NOT coalesce(anchor.canonicalName, '') IN $excludedStructureNames
+                  AND NOT coalesce(anchor.canonicalName, '') IN $excludedStructureNames
+                          AND NOT coalesce(anchor.canonicalName, '') IN $excludedStructureFieldNames
                           AND NOT coalesce(anchor.canonicalName, '') CONTAINS '、'
                           AND NOT coalesce(anchor.canonicalName, '') CONTAINS '，'
                           AND NOT coalesce(anchor.canonicalName, '') CONTAINS '；'
@@ -3156,6 +3317,7 @@ public class KnowledgeGraphStoreClient {
                           AND size(coalesce(anchor.canonicalName, '')) >= 3
                           AND size(coalesce(anchor.canonicalName, '')) <= 30
                           AND NOT coalesce(anchor.canonicalName, '') IN $excludedStructureNames
+                          AND NOT coalesce(anchor.canonicalName, '') IN $excludedStructureFieldNames
                           AND NOT coalesce(anchor.canonicalName, '') CONTAINS '、'
                           AND NOT coalesce(anchor.canonicalName, '') CONTAINS '，'
                           AND NOT coalesce(anchor.canonicalName, '') CONTAINS '；'
@@ -3179,6 +3341,7 @@ public class KnowledgeGraphStoreClient {
                   AND size(coalesce(target.canonicalName, '')) <= 30
                   AND NOT coalesce(target.canonicalName, '') =~ '^[0-9]+(\\\\.[0-9]+)?$'
                   AND NOT coalesce(target.canonicalName, '') IN $excludedStructureNames
+                  AND NOT coalesce(target.canonicalName, '') IN $excludedStructureFieldNames
                   AND NOT coalesce(target.canonicalName, '') CONTAINS '、'
                   AND NOT coalesce(target.canonicalName, '') CONTAINS '，'
                   AND NOT coalesce(target.canonicalName, '') CONTAINS '；'
@@ -3213,6 +3376,7 @@ public class KnowledgeGraphStoreClient {
                   AND size(coalesce(parent.canonicalName, '')) >= 2
                   AND size(coalesce(parent.canonicalName, '')) <= 30
                   AND NOT coalesce(parent.canonicalName, '') IN $excludedStructureNames
+                  AND NOT coalesce(parent.canonicalName, '') IN $excludedStructureFieldNames
                   AND NOT coalesce(parent.canonicalName, '') CONTAINS '、'
                   AND NOT coalesce(parent.canonicalName, '') CONTAINS '，'
                   AND NOT coalesce(parent.canonicalName, '') CONTAINS '；'
@@ -3258,7 +3422,6 @@ public class KnowledgeGraphStoreClient {
                 WHERE NOT (
                     structureRole = 'anchor_child'
                     AND titleHit = 0
-                    AND toLower(coalesce(target.entityType, '')) IN ['concept', 'indicator', 'resource']
                 )
                 MERGE (fact:Fact {factKey: 'structure:' + subject.canonicalKey + ':' + target.canonicalKey})
                 ON CREATE SET fact.id = randomUUID(), fact.createdAt = $now
@@ -3317,6 +3480,10 @@ public class KnowledgeGraphStoreClient {
                                 "我国", "本项目", "本系统", "项目", "系统", "平台", "高校", "院校",
                                 "功能", "关键词", "重要内容", "相关工作", "相关工作的负责人", "其他", "内容", "要求",
                                 "摘要信息", "表1", "表2"
+                        ),
+                        "excludedStructureFieldNames", List.of(
+                                "序号", "编号", "姓名", "性别", "日期", "时间", "填报日期", "申报日期", "申报时间",
+                                "申报单位", "备注", "说明", "附件", "内部", "主要内容", "联系电话", "通讯地址"
                         ),
                         "excludedStructureFragments", List.of("取得了", "开展了", "主持", "贯彻", "部署", "颁布", "取消", "提出", "给予", "作出", "决定", "提供"),
                         "batchId", batchId,
@@ -3951,6 +4118,13 @@ public class KnowledgeGraphStoreClient {
             return true;
         }
         String lower = rawName.toLowerCase(Locale.ROOT);
+        String compact = normalize(rawName).toLowerCase(Locale.ROOT);
+        if (Set.of(
+                "hyperlink", "pageref", "ref", "doi", "journal", "of", "and", "the", "to", "key",
+                "vol", "no", "pp", "et", "al"
+        ).contains(compact)) {
+            return true;
+        }
         return SOURCE_FILE_EXTENSION.matcher(lower).matches()
                 || lower.startsWith("liushl_")
                 || IMPORT_SUFFIX.matcher(rawName).matches();

@@ -344,6 +344,9 @@ CREATE TABLE IF NOT EXISTS graph_extraction_batches (
     source_file_id UUID NOT NULL REFERENCES source_files(id) ON DELETE CASCADE,
     graph_version VARCHAR(100) NOT NULL,
     extraction_profile VARCHAR(80) NOT NULL DEFAULT 'default',
+    extraction_depth VARCHAR(40) NOT NULL DEFAULT 'skeleton',
+    scope_type VARCHAR(40) NOT NULL DEFAULT 'document',
+    scope_key VARCHAR(260),
     batch_no INT NOT NULL,
     batch_count INT NOT NULL DEFAULT 0,
     batch_key VARCHAR(128) NOT NULL UNIQUE,
@@ -382,6 +385,9 @@ CREATE TABLE IF NOT EXISTS graph_candidate_records (
     attempt_id UUID REFERENCES graph_extraction_attempts(id) ON DELETE SET NULL,
     candidate_key VARCHAR(260) NOT NULL UNIQUE,
     candidate_type VARCHAR(40) NOT NULL,
+    extraction_depth VARCHAR(40) NOT NULL DEFAULT 'skeleton',
+    scope_type VARCHAR(40) NOT NULL DEFAULT 'document',
+    scope_key VARCHAR(260),
     stable_local_id VARCHAR(500),
     payload_hash VARCHAR(128) NOT NULL,
     payload_json JSONB NOT NULL,
@@ -434,6 +440,18 @@ ON CONFLICT (code) DO NOTHING;
 
 ALTER TABLE graph_build_jobs
     ADD COLUMN IF NOT EXISTS graph_batch_id UUID;
+ALTER TABLE graph_build_jobs
+    ADD COLUMN IF NOT EXISTS extraction_depth VARCHAR(40) NOT NULL DEFAULT 'skeleton',
+    ADD COLUMN IF NOT EXISTS scope_type VARCHAR(40) NOT NULL DEFAULT 'document',
+    ADD COLUMN IF NOT EXISTS scope_key VARCHAR(260);
+ALTER TABLE graph_extraction_batches
+    ADD COLUMN IF NOT EXISTS extraction_depth VARCHAR(40) NOT NULL DEFAULT 'skeleton',
+    ADD COLUMN IF NOT EXISTS scope_type VARCHAR(40) NOT NULL DEFAULT 'document',
+    ADD COLUMN IF NOT EXISTS scope_key VARCHAR(260);
+ALTER TABLE graph_candidate_records
+    ADD COLUMN IF NOT EXISTS extraction_depth VARCHAR(40) NOT NULL DEFAULT 'skeleton',
+    ADD COLUMN IF NOT EXISTS scope_type VARCHAR(40) NOT NULL DEFAULT 'document',
+    ADD COLUMN IF NOT EXISTS scope_key VARCHAR(260);
 
 ALTER TABLE source_files
     ADD COLUMN IF NOT EXISTS file_path VARCHAR(2000),
@@ -579,6 +597,25 @@ CREATE INDEX IF NOT EXISTS idx_graph_extraction_batches_doc_status ON graph_extr
 CREATE INDEX IF NOT EXISTS idx_graph_extraction_batches_source_file ON graph_extraction_batches(source_file_id, batch_no);
 CREATE INDEX IF NOT EXISTS idx_graph_extraction_attempts_batch_created ON graph_extraction_attempts(batch_id, created_at DESC);
 CREATE INDEX IF NOT EXISTS idx_graph_candidate_records_batch_type ON graph_candidate_records(batch_id, candidate_type, status);
+CREATE INDEX IF NOT EXISTS idx_graph_build_jobs_depth_scope ON graph_build_jobs(extraction_depth, scope_type, scope_key);
+CREATE INDEX IF NOT EXISTS idx_graph_extraction_batches_depth_scope ON graph_extraction_batches(doc_id, extraction_depth, scope_type, scope_key, status);
+CREATE INDEX IF NOT EXISTS idx_graph_candidate_records_depth_scope ON graph_candidate_records(extraction_depth, scope_type, scope_key, status);
+
+CREATE TABLE IF NOT EXISTS graph_runtime_settings (
+    setting_key VARCHAR(120) PRIMARY KEY,
+    setting_value VARCHAR(200) NOT NULL,
+    description TEXT,
+    created_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    updated_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP
+);
+
+INSERT INTO graph_runtime_settings (setting_key, setting_value, description)
+VALUES (
+    'auto_build_after_index',
+    'false',
+    'Whether graph skeleton build jobs are enqueued automatically after indexing finishes.'
+)
+ON CONFLICT (setting_key) DO NOTHING;
 
 CREATE OR REPLACE FUNCTION hmrag_update_documents_search_tsv()
 RETURNS trigger

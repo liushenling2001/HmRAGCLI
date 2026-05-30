@@ -284,6 +284,14 @@
       opacity: 1;
     }
 
+    .graph-svg.top-connected .graph-edge text {
+      opacity: 0;
+    }
+
+    .graph-svg.top-connected.is-focused .graph-edge.is-active text {
+      opacity: .92;
+    }
+
     .graph-node {
       cursor: grab;
     }
@@ -1004,6 +1012,7 @@
         <div></div>
         <div class="actions">
           <button id="loadGraphBtn" type="button" class="primary">查看图谱</button>
+          <button id="topConnectedBtn" type="button">高连接实体 Top 60</button>
           <button id="backToOverviewBtn" type="button" style="display:none;">返回全局图</button>
         </div>
       </section>
@@ -1022,6 +1031,9 @@
           <div id="entityList" class="entity-list"><div class="empty">实体清单加载中...</div></div>
           <div class="detail-block">
             <h4>实体详情</h4>
+            <div class="actions" style="justify-content:flex-start;margin-bottom:10px;">
+              <button id="enrichEntityBtn" type="button" style="display:none;">深化该实体</button>
+            </div>
             <pre id="graphDetail">点击图中的实体或实体清单，查看状态、来源与全部连接。</pre>
             <div id="stateList"></div>
             <div id="connectionList"></div>
@@ -1124,11 +1136,13 @@
       graphLimit: document.getElementById("graphLimit"),
       graphFilter: document.getElementById("graphFilter"),
       loadGraphBtn: document.getElementById("loadGraphBtn"),
+      topConnectedBtn: document.getElementById("topConnectedBtn"),
       backToOverviewBtn: document.getElementById("backToOverviewBtn"),
       graphStats: document.getElementById("graphStats"),
       graphSvg: document.getElementById("graphSvg"),
       graphDetailTitle: document.getElementById("graphDetailTitle"),
       graphDetail: document.getElementById("graphDetail"),
+      enrichEntityBtn: document.getElementById("enrichEntityBtn"),
       entitySearch: document.getElementById("entitySearch"),
       entitySearchBtn: document.getElementById("entitySearchBtn"),
       entityHint: document.getElementById("entityHint"),
@@ -1211,6 +1225,7 @@
       const batchProgress = current.batchNo && current.batchCount ? `${current.batchNo} / ${current.batchCount}` : "-";
       return [
         ["总 chunk 数", coverageValue(data, "chunkCount", isFinal ? 0 : "-")],
+        ["选中抽取 chunk", coverageValue(data, "selectedChunkCount", "-")],
         ["成功抽取 chunk", coverageValue(data, "extractedChunkCount", isFinal ? 0 : "-")],
         ["批次数", coverageValue(data, "batchCount", batchProgress)],
         ["失败批次", coverageValue(data, "failedBatchCount", isFinal ? 0 : "-")],
@@ -1922,6 +1937,67 @@
       return Math.abs(hash);
     }
 
+    function topGraphClusters(nodes, edges) {
+      const nodeIds = nodes.map(node => node.id);
+      const adjacency = new Map(nodeIds.map(id => [id, new Map()]));
+      edges.forEach(edge => {
+        if (!adjacency.has(edge.source) || !adjacency.has(edge.target)) return;
+        const weight = Math.max(1, numberValue(edge.factCount || 1));
+        adjacency.get(edge.source).set(edge.target, (adjacency.get(edge.source).get(edge.target) || 0) + weight);
+        adjacency.get(edge.target).set(edge.source, (adjacency.get(edge.target).get(edge.source) || 0) + weight);
+      });
+      const labels = new Map(nodeIds.map(id => [id, id]));
+      for (let round = 0; round < 8; round += 1) {
+        const ordered = [...nodes].sort((left, right) =>
+          numberValue(right.connectionCount || right.degree) - numberValue(left.connectionCount || left.degree)
+          || String(left.label || "").localeCompare(String(right.label || ""), "zh-Hans-CN")
+        );
+        ordered.forEach(node => {
+          const scores = new Map([[labels.get(node.id), 0.35]]);
+          adjacency.get(node.id).forEach((weight, neighborId) => {
+            const label = labels.get(neighborId);
+            scores.set(label, (scores.get(label) || 0) + weight);
+          });
+          const best = [...scores.entries()].sort((a, b) => b[1] - a[1] || String(a[0]).localeCompare(String(b[0])))[0];
+          if (best) labels.set(node.id, best[0]);
+        });
+      }
+      const groups = new Map();
+      nodes.forEach(node => {
+        const label = labels.get(node.id);
+        if (!groups.has(label)) {
+          groups.set(label, { id: label, nodes: [], score: 0 });
+        }
+        const group = groups.get(label);
+        group.nodes.push(node.id);
+        group.score += numberValue(node.connectionCount || node.degree);
+      });
+      return [...groups.values()].sort((left, right) => right.score - left.score || right.nodes.length - left.nodes.length);
+    }
+
+    function topGraphAnchors(groups, width, height) {
+      const anchors = new Map();
+      const centerX = width / 2;
+      const centerY = height / 2;
+      groups.forEach((group, index) => {
+        if (index === 0) {
+          anchors.set(group.id, { x: centerX, y: centerY });
+          return;
+        }
+        const ringIndex = index <= 6 ? 0 : 1;
+        const slot = ringIndex === 0 ? index - 1 : index - 7;
+        const slots = ringIndex === 0 ? Math.min(6, Math.max(1, groups.length - 1)) : Math.max(1, groups.length - 7);
+        const angle = -Math.PI / 2 + (Math.PI * 2 * slot) / slots;
+        const radiusX = width * (ringIndex === 0 ? 0.30 : 0.42);
+        const radiusY = height * (ringIndex === 0 ? 0.24 : 0.34);
+        anchors.set(group.id, {
+          x: centerX + Math.cos(angle) * radiusX,
+          y: centerY + Math.sin(angle) * radiusY
+        });
+      });
+      return anchors;
+    }
+
     function graphPointFromEvent(event) {
       const rect = el.graphSvg.getBoundingClientRect();
       const viewBox = el.graphSvg.viewBox.baseVal;
@@ -1938,13 +2014,46 @@
       }
     }
 
-    function prepareGraph(nodes, edges, width, height) {
+    function prepareGraph(nodes, edges, width, height, scope) {
       const previous = new Map(state.graph.nodes.map(node => [node.id, node]));
       const degree = new Map(nodes.map(node => [node.id, 0]));
       edges.forEach(edge => {
-        degree.set(edge.source, (degree.get(edge.source) || 0) + 1);
-        degree.set(edge.target, (degree.get(edge.target) || 0) + 1);
+        const weight = Math.max(1, numberValue(edge.factCount || 1));
+        degree.set(edge.source, (degree.get(edge.source) || 0) + weight);
+        degree.set(edge.target, (degree.get(edge.target) || 0) + weight);
       });
+      if (scope === "top_connected") {
+        const groups = topGraphClusters(nodes, edges);
+        const anchors = topGraphAnchors(groups, width, height);
+        const groupByNode = new Map();
+        groups.forEach((group, groupIndex) => {
+          group.nodes.forEach((id, localIndex) => {
+            groupByNode.set(id, { group, groupIndex, localIndex });
+          });
+        });
+        return nodes.map((node, index) => {
+          const groupInfo = groupByNode.get(node.id) || { group: { id: node.id, nodes: [node.id] }, groupIndex: index, localIndex: 0 };
+          const anchor = anchors.get(groupInfo.group.id) || { x: width / 2, y: height / 2 };
+          const groupSize = groupInfo.group.nodes.length;
+          const localRadius = Math.min(125, 34 + Math.sqrt(groupSize) * 22);
+          const angle = (Math.PI * 2 * groupInfo.localIndex) / Math.max(1, groupSize) + ((hashText(node.id) % 17) / 100);
+          const connectionRank = Math.min(1, numberValue(node.connectionCount || degree.get(node.id)) / Math.max(1, numberValue(nodes[0]?.connectionCount || degree.get(nodes[0]?.id))));
+          const pullIn = 1 - connectionRank * 0.45;
+          return {
+            ...node,
+            x: anchor.x + Math.cos(angle) * localRadius * pullIn,
+            y: anchor.y + Math.sin(angle) * localRadius * 0.72 * pullIn,
+            vx: 0,
+            vy: 0,
+            degree: degree.get(node.id) || 0,
+            fixed: false,
+            clusterId: groupInfo.group.id,
+            clusterX: anchor.x,
+            clusterY: anchor.y,
+            layoutMode: "top_connected"
+          };
+        });
+      }
       const hasStateNodes = nodes.some(node => node.isStateNode || String(node.type || "").toLowerCase() === "entitystate");
       const stateNodes = nodes
         .filter(node => node.isStateNode || String(node.type || "").toLowerCase() === "entitystate")
@@ -1969,7 +2078,8 @@
             vx: old.vx || 0,
             vy: old.vy || 0,
             degree: degree.get(node.id) || 0,
-            fixed: old.fixed || false
+            fixed: old.fixed || false,
+            layoutMode: scope || "overview"
           };
         }
         if (hasStateNodes && centerIds.has(node.id)) {
@@ -2055,6 +2165,7 @@
       const nodeById = new Map(nodes.map(node => [node.id, node]));
       const centerX = width / 2;
       const centerY = height / 2;
+      const topConnectedMode = state.graph.mode === "top_connected";
       for (let i = 0; i < nodes.length; i += 1) {
         for (let j = i + 1; j < nodes.length; j += 1) {
           const a = nodes[i];
@@ -2067,7 +2178,9 @@
             dy = 0.1;
             distanceSq = 1;
           }
-          const force = Math.min(9, 12500 / distanceSq);
+          const sameCluster = topConnectedMode && a.clusterId && a.clusterId === b.clusterId;
+          const repelBase = sameCluster ? 8200 : (topConnectedMode ? 24500 : 12500);
+          const force = Math.min(topConnectedMode ? 14 : 9, repelBase / distanceSq);
           const distance = Math.sqrt(distanceSq);
           const fx = (dx / distance) * force;
           const fy = (dy / distance) * force;
@@ -2088,8 +2201,11 @@
         const dx = target.x - source.x;
         const dy = target.y - source.y;
         const distance = Math.max(1, Math.sqrt(dx * dx + dy * dy));
-        const desired = 210 + Math.min(110, (source.degree + target.degree) * 4);
-        const force = (distance - desired) * 0.006;
+        const sameCluster = topConnectedMode && source.clusterId && source.clusterId === target.clusterId;
+        const desired = topConnectedMode
+          ? (sameCluster ? 92 : 150) + Math.min(44, Math.sqrt(source.degree + target.degree) * 9)
+          : 210 + Math.min(110, (source.degree + target.degree) * 4);
+        const force = (distance - desired) * (topConnectedMode ? 0.014 : 0.006);
         const fx = (dx / distance) * force;
         const fy = (dy / distance) * force;
         if (!source.fixed) {
@@ -2103,10 +2219,17 @@
       });
       nodes.forEach(node => {
         if (!node.fixed) {
-          node.vx += (centerX - node.x) * 0.0015;
-          node.vy += (centerY - node.y) * 0.0015;
-          node.vx *= 0.78;
-          node.vy *= 0.78;
+          if (topConnectedMode && node.clusterX !== undefined && node.clusterY !== undefined) {
+            node.vx += (node.clusterX - node.x) * 0.010;
+            node.vy += (node.clusterY - node.y) * 0.010;
+            node.vx += (centerX - node.x) * 0.00035;
+            node.vy += (centerY - node.y) * 0.00035;
+          } else {
+            node.vx += (centerX - node.x) * 0.0015;
+            node.vy += (centerY - node.y) * 0.0015;
+          }
+          node.vx *= topConnectedMode ? 0.70 : 0.78;
+          node.vy *= topConnectedMode ? 0.70 : 0.78;
           node.x += node.vx;
           node.y += node.vy;
           node.x = Math.max(64, Math.min(width - 64, node.x));
@@ -2185,6 +2308,7 @@
       stopGraphAnimation();
       const rawNodes = Array.isArray(graph.nodes) ? graph.nodes : [];
       const rawEdges = Array.isArray(graph.edges) ? graph.edges : [];
+      el.graphSvg.classList.toggle("top-connected", graph.scope === "top_connected");
       const filter = el.graphFilter.value.trim().toLowerCase();
       const visibleNodeIds = new Set(rawNodes
         .filter(node => !filter || String(node.label || "").toLowerCase().includes(filter))
@@ -2200,13 +2324,15 @@
       const edges = mergeVisibleEdges(visibleFacts);
       const width = Math.max(900, el.graphSvg.clientWidth || 900);
       const height = 680;
-      const positioned = prepareGraph(nodes, edges, width, height);
+      const positioned = prepareGraph(nodes, edges, width, height, graph.scope);
       state.graph.nodes = positioned;
       state.graph.edges = edges;
       const stats = graph.stats || {};
       const scopeText = graph.scope === "entity"
         ? `实体关系图：${graph.centerEntityLabel || "-"}`
-        : `全局实体 ${numberValue(stats.entities)} · 状态 ${numberValue(stats.states)} · 事实 ${numberValue(stats.facts)} · 融合簇 ${numberValue(stats.clusters)}`;
+        : (graph.scope === "top_connected"
+          ? `高连接实体 Top ${numberValue(graph.targetEntities || nodes.length)} · 全局实体 ${numberValue(stats.entities)}`
+          : `全局实体 ${numberValue(stats.entities)} · 状态 ${numberValue(stats.states)} · 事实 ${numberValue(stats.facts)} · 融合簇 ${numberValue(stats.clusters)}`);
       el.graphStats.textContent = `${scopeText} · 当前显示 ${nodes.length} 实体 / ${edges.length} 实体关系 / ${visibleFacts.length} 事实`;
       const nodeById = new Map(positioned.map(node => [node.id, node]));
       const edgeMarkup = edges.map(edge => {
@@ -2259,6 +2385,7 @@
             ${stateCount > 1 ? `<circle class="state-ring" cx="0" cy="0" r="${radius + 6}" />` : ""}
             ${transitionCount > 0 ? `<circle class="evolution-ring" cx="0" cy="0" r="${radius + 12}" />` : ""}
             <circle cx="0" cy="0" r="${radius}" fill="${colorForType(node.type)}" opacity="0.94" />
+            ${numberValue(node.connectionCount) > 0 ? `<text x="0" y="4" text-anchor="middle">${numberValue(node.connectionCount)}</text>` : ""}
             ${transitionCount > 0 ? `
               <g class="evolution-badge" transform="translate(${radius * 0.72} ${-radius * 0.72})">
                 <circle cx="0" cy="0" r="11" />
@@ -2305,6 +2432,31 @@
       } finally {
         el.loadGraphBtn.disabled = false;
         el.loadGraphBtn.textContent = "查看图谱";
+      }
+    }
+
+    async function loadTopConnectedGraph() {
+      el.topConnectedBtn.disabled = true;
+      el.topConnectedBtn.textContent = "加载中...";
+      showNotice("", false);
+      try {
+        const targetEntities = Math.max(10, Math.min(Number(el.graphLimit.value || 60), 120));
+        el.graphLimit.value = String(Math.max(targetEntities, 60));
+        const graph = await request(`${API_BASE}/view/top-connected${buildQuery({ targetEntities: Math.max(targetEntities, 60) })}`);
+        el.graphSvg.__rawGraph = graph;
+        state.graph.mode = "top_connected";
+        state.graph.selectedEntityId = null;
+        state.entities = Array.isArray(graph.topEntities) ? graph.topEntities : [];
+        state.pages.entity = 1;
+        el.entityHint.textContent = `高连接实体 Top ${state.entities.length}：按实体关系数排序。点击实体可查看它的全部连接。`;
+        el.backToOverviewBtn.style.display = "";
+        renderGraph(graph);
+      } catch (error) {
+        el.graphStats.textContent = "高连接实体加载失败";
+        showNotice(`加载高连接实体失败：${error.message || error}`, true);
+      } finally {
+        el.topConnectedBtn.disabled = false;
+        el.topConnectedBtn.textContent = "高连接实体 Top 60";
       }
     }
 
@@ -2401,6 +2553,7 @@
       renderEntityList();
       el.graphDetailTitle.textContent = "实体详情加载中...";
       el.graphDetail.textContent = "正在读取 EntityState 与全部连接。";
+      el.enrichEntityBtn.style.display = "none";
       el.stateList.innerHTML = "";
       el.connectionList.innerHTML = "";
       try {
@@ -2412,6 +2565,7 @@
         const transitions = Array.isArray(result.transitions) ? result.transitions : [];
         const stateConnectionCount = states.reduce((sum, item) => sum + numberValue((item.connections || []).length), 0);
         el.graphDetailTitle.textContent = entity.label || "实体";
+        el.enrichEntityBtn.style.display = "";
         el.graphDetail.textContent = [
           `类型：${entity.type || "-"}`,
           `规范名：${entity.clusterName || entity.label || "-"}`,
@@ -2433,8 +2587,29 @@
         if (visibleNode) applyGraphFocus(visibleNode.id);
       } catch (error) {
         el.graphDetailTitle.textContent = "实体详情加载失败";
+        el.enrichEntityBtn.style.display = "none";
         el.graphDetail.textContent = error.message || String(error);
         showNotice(`加载实体详情失败：${error.message || error}`, true);
+      }
+    }
+
+    async function enrichSelectedEntity() {
+      const entityId = state.graph.selectedEntityId;
+      if (!entityId) {
+        showNotice("请先选择一个实体。", true);
+        return;
+      }
+      el.enrichEntityBtn.disabled = true;
+      el.enrichEntityBtn.textContent = "提交中...";
+      try {
+        const result = await request(`${API_BASE}/entities/${encodeURIComponent(entityId)}/enrich${buildQuery({ limit: 100 })}`, { method: "POST" });
+        showNotice(`实体深化任务已提交：图谱已知 ${result.graphKnownMatched ?? 0} 篇，索引召回 ${result.indexRecalled ?? 0} 篇，入队 ${result.queued ?? 0} 个任务。`, false);
+        await loadJobs(true);
+      } catch (error) {
+        showNotice(`提交实体深化失败：${error.message || error}`, true);
+      } finally {
+        el.enrichEntityBtn.disabled = false;
+        el.enrichEntityBtn.textContent = "深化该实体";
       }
     }
 
@@ -2516,7 +2691,13 @@
     el.loadTemplatesBtn.addEventListener("click", () => loadTemplates(false));
     el.saveTemplatesBtn.addEventListener("click", saveTemplates);
     el.loadGraphBtn.addEventListener("click", loadGraph);
+    el.topConnectedBtn.addEventListener("click", loadTopConnectedGraph);
+    el.enrichEntityBtn.addEventListener("click", enrichSelectedEntity);
     el.backToOverviewBtn.addEventListener("click", () => {
+      if (state.graph.mode === "top_connected") {
+        loadGraph(true);
+        return;
+      }
       if (!state.graph.rawOverview) return;
       state.graph.mode = "overview";
       state.graph.selectedDetail = null;
@@ -2525,6 +2706,7 @@
       el.graphSvg.__rawGraph = state.graph.rawOverview;
       renderGraph(state.graph.rawOverview);
       el.graphDetailTitle.textContent = "未选择节点";
+      el.enrichEntityBtn.style.display = "none";
       el.graphDetail.textContent = "点击图中的实体或实体清单，查看状态、来源与全部连接。";
       el.stateList.innerHTML = "";
       el.connectionList.innerHTML = "";
