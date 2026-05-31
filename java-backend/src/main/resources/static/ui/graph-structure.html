@@ -1,0 +1,77 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Graph Structure Enhancement</title>
+  <link rel="icon" href="/favicon.ico" />
+  <link rel="stylesheet" href="/ui/assets/graph-pipeline.css" />
+</head>
+<body>
+  <main class="shell">
+    <header class="topbar">
+      <div class="brand"><div class="eyebrow">Stage 4</div><h1>结构增强</h1></div>
+      <nav class="nav"><a href="/ui/graph-pipeline.html">流程总览</a><a href="/ui/graph-governance.html">属性治理</a><a href="/ui/graph-fusion.html">下一步：实体融合</a></nav>
+    </header>
+    <div id="stageNav"></div>
+    <div id="notice" class="notice"></div>
+    <section class="split">
+      <div class="panel">
+        <div class="section-head">
+          <h2>动作</h2>
+          <span>利用文档结构、章节、chunk 关键词补充弱关联，不改写原始抽取结果。</span>
+        </div>
+        <div class="timeline">
+          <div class="step"><span class="step-no">1</span><div><strong>读取局部图谱</strong><div class="muted">只使用已经成功抽取并保存的事实。</div></div></div>
+          <div class="step"><span class="step-no">2</span><div><strong>按章节和 chunk 结构找关联</strong><div class="muted">同章、同段、同标题下的实体会形成候选结构边。</div></div></div>
+          <div class="step"><span class="step-no">3</span><div><strong>写入可回溯增强结果</strong><div class="muted">增强边带来源标记，后续可单独评估。</div></div></div>
+        </div>
+        <div class="actions" style="margin-top:14px;">
+          <button id="runBtn" class="primary" type="button">执行结构增强</button>
+          <button id="refreshBtn" type="button">刷新统计</button>
+        </div>
+      </div>
+      <aside class="panel">
+        <div class="section-head"><h2>当前统计</h2><span>增强前后统一看全局事实库。</span></div>
+        <div id="metrics" class="metrics" style="grid-template-columns:1fr 1fr;margin:0;"></div>
+      </aside>
+    </section>
+  </main>
+  <script type="module">
+    import { API_BASE, metric, request, showNotice, stageNav } from "/ui/assets/graph-pipeline.js";
+    const el = {
+      stageNav: document.getElementById("stageNav"),
+      notice: document.getElementById("notice"),
+      metrics: document.getElementById("metrics"),
+      runBtn: document.getElementById("runBtn"),
+      refreshBtn: document.getElementById("refreshBtn")
+    };
+    el.stageNav.innerHTML = stageNav("structure");
+    async function load() {
+      const stats = await request(`${API_BASE}/stats`);
+      el.metrics.innerHTML = [
+        metric("实体", stats.entities ?? 0),
+        metric("关系", stats.relationships ?? stats.relations ?? 0),
+        metric("事实", stats.facts ?? 0),
+        metric("属性", stats.attributes ?? stats.attributeFacts ?? 0)
+      ].join("");
+    }
+    async function run() {
+      try {
+        el.runBtn.disabled = true;
+        showNotice(el.notice, "", false);
+        const result = await request(`${API_BASE}/governance/structure/start`, { method: "POST" });
+        showNotice(el.notice, `结构增强完成：候选 ${result.candidates ?? "-"}，写入 ${result.created ?? result.enhancedEdges ?? "-"}。`, false);
+        await load();
+      } catch (error) {
+        showNotice(el.notice, `结构增强失败：${error.message || error}`, true);
+      } finally {
+        el.runBtn.disabled = false;
+      }
+    }
+    el.runBtn.addEventListener("click", run);
+    el.refreshBtn.addEventListener("click", () => load().catch(error => showNotice(el.notice, `刷新失败：${error.message || error}`, true)));
+    load().catch(error => showNotice(el.notice, `加载统计失败：${error.message || error}`, true));
+  </script>
+</body>
+</html>

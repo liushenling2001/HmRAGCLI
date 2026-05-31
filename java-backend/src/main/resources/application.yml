@@ -39,7 +39,6 @@ spring:
       hibernate:
         jdbc:
           time_zone: UTC
-        dialect: org.hibernate.dialect.PostgreSQLDialect
 
 management:
   endpoints:
@@ -163,3 +162,51 @@ hmrag:
       max-completion-tokens: ${HMRAG_DOMAIN_KNOWLEDGE_LLM_MAX_COMPLETION_TOKENS:${HMRAG_DOMAIN_KNOWLEDGE_SETUP_ASSISTANT_MAX_COMPLETION_TOKENS:38400}}
       group-max-completion-tokens: ${HMRAG_DOMAIN_KNOWLEDGE_LLM_GROUP_MAX_COMPLETION_TOKENS:${HMRAG_DOMAIN_KNOWLEDGE_LLM_MAX_COMPLETION_TOKENS:${HMRAG_DOMAIN_KNOWLEDGE_SETUP_ASSISTANT_MAX_COMPLETION_TOKENS:38400}}}
       term-plan-max-completion-tokens: ${HMRAG_DOMAIN_KNOWLEDGE_LLM_TERM_PLAN_MAX_COMPLETION_TOKENS:8192}
+  knowledge-graph:
+    enabled: ${HMRAG_KG_ENABLED:false}
+    store-provider: ${HMRAG_KG_STORE_PROVIDER:neo4j-http}
+    store-base-url: ${HMRAG_KG_STORE_BASE_URL:}
+    store-database: ${HMRAG_KG_STORE_DATABASE:neo4j}
+    store-username: ${HMRAG_KG_STORE_USERNAME:}
+    store-password: ${HMRAG_KG_STORE_PASSWORD:}
+    store-connect-timeout-seconds: ${HMRAG_KG_STORE_CONNECT_TIMEOUT_SECONDS:5}
+    store-request-timeout-seconds: ${HMRAG_KG_STORE_REQUEST_TIMEOUT_SECONDS:60}
+    poll-delay-millis: ${HMRAG_KG_POLL_DELAY_MILLIS:5000}
+    batch-size: ${HMRAG_KG_BATCH_SIZE:2}
+    stale-running-seconds: ${HMRAG_KG_STALE_RUNNING_SECONDS:600}
+    chunk-batch-size: ${HMRAG_KG_CHUNK_BATCH_SIZE:6}
+    max-chunks-per-document: ${HMRAG_KG_MAX_CHUNKS_PER_DOCUMENT:120}
+    chunk-selection-enabled: ${HMRAG_KG_CHUNK_SELECTION_ENABLED:true}
+    min-chunk-chars: ${HMRAG_KG_MIN_CHUNK_CHARS:40}
+    min-selected-chunks-per-document: ${HMRAG_KG_MIN_SELECTED_CHUNKS_PER_DOCUMENT:12}
+    max-selected-chunks-per-document: ${HMRAG_KG_MAX_SELECTED_CHUNKS_PER_DOCUMENT:60}
+    max-knowledge-units-per-document: ${HMRAG_KG_MAX_KNOWLEDGE_UNITS_PER_DOCUMENT:80}
+    extraction-profile: ${HMRAG_KG_EXTRACTION_PROFILE:auto}
+    project-profile-keywords: ${HMRAG_KG_PROJECT_PROFILE_KEYWORDS:项目,系统,平台,算法,建设,升级,应用}
+    policy-profile-keywords: ${HMRAG_KG_POLICY_PROFILE_KEYWORDS:制度,办法,规定,规程,条例,细则,规范}
+    speech-profile-keywords: ${HMRAG_KG_SPEECH_PROFILE_KEYWORDS:讲话,发言,会议,报告会,座谈}
+    report-profile-keywords: ${HMRAG_KG_REPORT_PROFILE_KEYWORDS:报告,总结,分析,统计,调研}
+    extraction-llm:
+      provider: ${HMRAG_KG_LLM_PROVIDER:disabled}
+      base-url: ${HMRAG_KG_LLM_BASE_URL:}
+      api-key: ${HMRAG_KG_LLM_API_KEY:}
+      model: ${HMRAG_KG_LLM_MODEL:}
+      connect-timeout-seconds: ${HMRAG_KG_LLM_CONNECT_TIMEOUT_SECONDS:5}
+      request-timeout-seconds: ${HMRAG_KG_LLM_REQUEST_TIMEOUT_SECONDS:120}
+      fail-on-error: ${HMRAG_KG_LLM_FAIL_ON_ERROR:true}
+      max-completion-tokens: ${HMRAG_KG_LLM_MAX_COMPLETION_TOKENS:12000}
+    entity-fusion:
+      enabled: ${HMRAG_KG_ENTITY_FUSION_ENABLED:true}
+      mode: ${HMRAG_KG_ENTITY_FUSION_MODE:deterministic}
+      create-same-as-edges: ${HMRAG_KG_ENTITY_FUSION_CREATE_SAME_AS_EDGES:true}
+      min-name-length: ${HMRAG_KG_ENTITY_FUSION_MIN_NAME_LENGTH:2}
+      max-group-size: ${HMRAG_KG_ENTITY_FUSION_MAX_GROUP_SIZE:50}
+      fusion-llm:
+        provider: ${HMRAG_KG_FUSION_LLM_PROVIDER:${HMRAG_KG_LLM_PROVIDER:disabled}}
+        base-url: ${HMRAG_KG_FUSION_LLM_BASE_URL:${HMRAG_KG_LLM_BASE_URL:}}
+        api-key: ${HMRAG_KG_FUSION_LLM_API_KEY:${HMRAG_KG_LLM_API_KEY:}}
+        model: ${HMRAG_KG_FUSION_LLM_MODEL:${HMRAG_KG_LLM_MODEL:}}
+        connect-timeout-seconds: ${HMRAG_KG_FUSION_LLM_CONNECT_TIMEOUT_SECONDS:5}
+        request-timeout-seconds: ${HMRAG_KG_FUSION_LLM_REQUEST_TIMEOUT_SECONDS:120}
+        fail-on-error: ${HMRAG_KG_FUSION_LLM_FAIL_ON_ERROR:false}
+        max-completion-tokens: ${HMRAG_KG_FUSION_LLM_MAX_COMPLETION_TOKENS:8000}

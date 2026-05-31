@@ -38,3 +38,42 @@ hmrag:
       max-completion-tokens: 38400
       group-max-completion-tokens: 38400
       term-plan-max-completion-tokens: 8192
+  knowledge-graph:
+    enabled: false
+    store-provider: neo4j-http
+    store-base-url: http://127.0.0.1:7474
+    store-database: neo4j
+    store-username: neo4j
+    store-password: ""
+    store-connect-timeout-seconds: 5
+    store-request-timeout-seconds: 60
+    poll-delay-millis: 5000
+    batch-size: 2
+    stale-running-seconds: 600
+    chunk-batch-size: 6
+    max-chunks-per-document: 120
+    max-knowledge-units-per-document: 80
+    extraction-llm:
+      provider: openai_compatible
+      base-url: http://127.0.0.1:1234/v1
+      api-key: ""
+      model: your-kg-extraction-model
+      connect-timeout-seconds: 5
+      request-timeout-seconds: 120
+      fail-on-error: true
+      max-completion-tokens: 12000
+    entity-fusion:
+      enabled: true
+      mode: deterministic
+      create-same-as-edges: true
+      min-name-length: 2
+      max-group-size: 50
+      fusion-llm:
+        provider: disabled
+        base-url: http://127.0.0.1:1234/v1
+        api-key: ""
+        model: your-kg-fusion-model
+        connect-timeout-seconds: 5
+        request-timeout-seconds: 120
+        fail-on-error: false
+        max-completion-tokens: 8000

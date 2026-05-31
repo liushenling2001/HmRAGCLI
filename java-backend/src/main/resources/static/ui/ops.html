@@ -27,6 +27,27 @@
       *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
       html { height: 100%; font-size: 16px; -webkit-font-smoothing: antialiased; }
       body { min-height: 100%; font-family: var(--font-body); font-size: var(--text-base); line-height: 1.6; color: var(--text); background-color: var(--bg); }
+      .graph-entry {
+        position: fixed;
+        right: 24px;
+        bottom: 24px;
+        z-index: 1000;
+        display: inline-flex;
+        align-items: center;
+        justify-content: center;
+        min-height: 40px;
+        padding: 0 14px;
+        border: 1px solid var(--border-strong);
+        border-radius: 8px;
+        background: var(--text);
+        color: #fff;
+        text-decoration: none;
+        font-size: 13px;
+        font-weight: 700;
+        box-shadow: var(--shadow-lg);
+      }
+      .graph-entry:focus,
+      .graph-entry:hover { background: #333; }
     </style>
     <script type="module" crossorigin src="/ui/assets/ops.js"></script>
     <link rel="modulepreload" crossorigin href="/ui/assets/base.js">
@@ -34,6 +55,7 @@
     <link rel="stylesheet" crossorigin href="/ui/assets/ops.css">
   </head>
   <body>
+    <a class="graph-entry" href="/ui/graph-pipeline.html">知识图谱</a>
     <div id="ops-static-shell" style="max-width:1400px;margin:0 auto;padding:32px 24px 40px;font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,'PingFang SC','Microsoft YaHei',sans-serif;color:#1a1a1a;background:#fafafa;">
       <div style="display:flex;align-items:center;justify-content:space-between;gap:16px;padding:20px 24px;margin-bottom:24px;border:1px solid #d4d4d4;border-radius:12px;background:#ffffff;">
         <div>

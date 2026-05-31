@@ -13,7 +13,10 @@ import org.springframework.stereotype.Component;
 
 import java.time.Duration;
 import java.time.OffsetDateTime;
+import java.util.HashMap;
 import java.util.List;
+import java.util.Map;
+import java.util.UUID;
 
 @Component
 public class DomainKnowledgeWorker {
@@ -22,17 +25,20 @@ public class DomainKnowledgeWorker {
 
     private final DomainRefineJobRepository domainRefineJobRepository;
     private final DomainKnowledgeCompilationService domainKnowledgeCompilationService;
+    private final KnowledgeGraphBuildService knowledgeGraphBuildService;
     private final AsyncTaskExecutor domainKnowledgeTaskExecutor;
     private final AppProperties appProperties;
 
     public DomainKnowledgeWorker(
             DomainRefineJobRepository domainRefineJobRepository,
             DomainKnowledgeCompilationService domainKnowledgeCompilationService,
+            KnowledgeGraphBuildService knowledgeGraphBuildService,
             @Qualifier("domainKnowledgeTaskExecutor") AsyncTaskExecutor domainKnowledgeTaskExecutor,
             AppProperties appProperties
     ) {
         this.domainRefineJobRepository = domainRefineJobRepository;
         this.domainKnowledgeCompilationService = domainKnowledgeCompilationService;
+        this.knowledgeGraphBuildService = knowledgeGraphBuildService;
         this.domainKnowledgeTaskExecutor = domainKnowledgeTaskExecutor;
         this.appProperties = appProperties;
     }
@@ -40,6 +46,7 @@ public class DomainKnowledgeWorker {
     @Scheduled(fixedDelayString = "${hmrag.domain-knowledge.poll-delay-millis:3000}")
     public void poll() {
         recoverStaleRunningJobs();
+        promoteGraphOptimizedJobs();
 
         List<DomainRefineJob> queuedJobs = domainRefineJobRepository.findTop10ByStatusOrderByCreatedAtAsc("queued");
         if (queuedJobs.isEmpty()) {
@@ -83,6 +90,48 @@ public class DomainKnowledgeWorker {
             job.setHeartbeatAt(now);
             domainRefineJobRepository.save(job);
             log.warn("Recovered stale domain knowledge job: jobId={}", job.getId());
+        }
+    }
+
+    private void promoteGraphOptimizedJobs() {
+        List<DomainRefineJob> waitingJobs = domainRefineJobRepository.findTop10ByStatusOrderByCreatedAtAsc("waiting_graph_optimization");
+        for (DomainRefineJob job : waitingJobs) {
+            try {
+                UUID graphBatchId = graphOptimizationBatchId(job);
+                if (graphBatchId != null && !knowledgeGraphBuildService.graphBatchCompleted(graphBatchId)) {
+                    continue;
+                }
+                Map<String, Object> inputSummary = job.getInputSummaryJson() == null
+                        ? new HashMap<>()
+                        : new HashMap<>(job.getInputSummaryJson());
+                Map<String, Object> graphOptimization = graphBatchId == null
+                        ? Map.of("completed", true, "reason", "NO_GRAPH_BATCH")
+                        : knowledgeGraphBuildService.graphBatchStatus(graphBatchId);
+                inputSummary.put("graphOptimizationStatus", graphOptimization);
+                job.setInputSummaryJson(inputSummary);
+                job.setStatus("queued");
+                job.setHeartbeatAt(OffsetDateTime.now());
+                domainRefineJobRepository.save(job);
+                log.info("Domain knowledge job graph optimization completed: jobId={}, graphBatchId={}", job.getId(), graphBatchId);
+            } catch (Exception ex) {
+                log.warn("Failed to check domain graph optimization: jobId={}, error={}", job.getId(), ex.getMessage());
+            }
+        }
+    }
+
+    private UUID graphOptimizationBatchId(DomainRefineJob job) {
+        Object raw = job.getInputSummaryJson() == null ? null : job.getInputSummaryJson().get("graphOptimization");
+        if (!(raw instanceof Map<?, ?> map)) {
+            return null;
+        }
+        Object batch = map.get("graphBatchId");
+        if (batch == null) {
+            return null;
+        }
+        try {
+            return UUID.fromString(String.valueOf(batch));
+        } catch (IllegalArgumentException ex) {
+            return null;
         }
     }
 

@@ -1,0 +1,2837 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>HmRAGCLI Knowledge Graph</title>
+  <link rel="icon" href="/favicon.ico" />
+  <link rel="stylesheet" href="/ui/assets/graph-pipeline.css" />
+  <style>
+    :root {
+      --bg: #f7f8fa;
+      --panel: #ffffff;
+      --panel-soft: #f2f4f7;
+      --border: #d8dee8;
+      --border-strong: #1f2937;
+      --text: #172033;
+      --muted: #69758a;
+      --primary: #2563eb;
+      --success: #047857;
+      --warning: #b45309;
+      --error: #b91c1c;
+      --info-bg: #eff6ff;
+      --success-bg: #ecfdf5;
+      --warning-bg: #fffbeb;
+      --error-bg: #fef2f2;
+      --font: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "PingFang SC", "Microsoft YaHei", Arial, sans-serif;
+      --mono: "SF Mono", Consolas, "Liberation Mono", Menlo, monospace;
+    }
+
+    * { box-sizing: border-box; }
+
+    body {
+      margin: 0;
+      min-height: 100vh;
+      color: var(--text);
+      background: var(--bg);
+      font-family: var(--font);
+      font-size: 14px;
+      line-height: 1.6;
+    }
+
+    a { color: inherit; }
+
+    .shell {
+      width: min(1440px, calc(100% - 32px));
+      margin: 0 auto;
+      padding: 28px 0 40px;
+    }
+
+    .topbar {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 18px;
+      padding: 18px 0 22px;
+      border-bottom: 1px solid var(--border);
+    }
+
+    .brand {
+      display: grid;
+      gap: 4px;
+    }
+
+    .eyebrow {
+      color: var(--muted);
+      font-size: 12px;
+      font-weight: 700;
+      letter-spacing: .12em;
+      text-transform: uppercase;
+    }
+
+    h1 {
+      margin: 0;
+      font-size: 28px;
+      font-weight: 760;
+      letter-spacing: 0;
+    }
+
+    .nav {
+      display: flex;
+      align-items: center;
+      flex-wrap: wrap;
+      gap: 10px;
+    }
+
+    .nav a,
+    button,
+    .button {
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      min-height: 36px;
+      padding: 0 13px;
+      border: 1px solid var(--border);
+      border-radius: 8px;
+      background: var(--panel);
+      color: var(--text);
+      text-decoration: none;
+      font: inherit;
+      font-weight: 700;
+      cursor: pointer;
+    }
+
+    button.primary {
+      border-color: var(--border-strong);
+      background: var(--text);
+      color: #fff;
+    }
+
+    button.danger {
+      border-color: #fecaca;
+      background: var(--error-bg);
+      color: var(--error);
+    }
+
+    button:disabled {
+      cursor: not-allowed;
+      opacity: .56;
+    }
+
+    .toolbar {
+      display: grid;
+      grid-template-columns: minmax(240px, 1.2fr) minmax(120px, .45fr) minmax(240px, 1fr) auto;
+      gap: 12px;
+      align-items: end;
+      padding: 20px 0;
+    }
+
+    label {
+      display: grid;
+      gap: 6px;
+      color: var(--muted);
+      font-size: 12px;
+      font-weight: 700;
+    }
+
+    input,
+    select {
+      width: 100%;
+      min-height: 38px;
+      padding: 0 11px;
+      border: 1px solid var(--border);
+      border-radius: 8px;
+      background: var(--panel);
+      color: var(--text);
+      font: inherit;
+    }
+
+    .actions {
+      display: flex;
+      justify-content: flex-end;
+      flex-wrap: wrap;
+      gap: 10px;
+    }
+
+    .metrics {
+      display: grid;
+      grid-template-columns: repeat(5, minmax(120px, 1fr));
+      gap: 10px;
+      margin-bottom: 16px;
+    }
+
+    .metric {
+      padding: 13px 14px;
+      border: 1px solid var(--border);
+      border-radius: 8px;
+      background: var(--panel);
+    }
+
+    .metric span {
+      display: block;
+      color: var(--muted);
+      font-size: 12px;
+      font-weight: 700;
+    }
+
+    .metric strong {
+      display: block;
+      margin-top: 4px;
+      font-size: 24px;
+      line-height: 1.1;
+    }
+
+    .notice {
+      display: none;
+      margin-bottom: 14px;
+      padding: 12px 14px;
+      border: 1px solid var(--border);
+      border-radius: 8px;
+      background: var(--info-bg);
+      color: #1d4ed8;
+      white-space: pre-wrap;
+    }
+
+    .notice.error {
+      border-color: #fecaca;
+      background: var(--error-bg);
+      color: var(--error);
+    }
+
+    .template-editor {
+      display: grid;
+      gap: 10px;
+      margin: 16px 0;
+      padding: 14px;
+      border: 1px solid var(--border);
+      border-radius: 8px;
+      background: var(--panel);
+    }
+
+    .template-editor textarea {
+      width: 100%;
+      min-height: 220px;
+      resize: vertical;
+      font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+      font-size: 12px;
+      line-height: 1.5;
+    }
+
+    .table-wrap {
+      overflow: auto;
+      border: 1px solid var(--border);
+      border-radius: 8px;
+      background: var(--panel);
+    }
+
+    .graph-panel {
+      display: grid;
+      grid-template-columns: minmax(0, 1fr) 360px;
+      gap: 14px;
+      margin-top: 16px;
+    }
+
+    .graph-canvas {
+      position: relative;
+      min-height: 680px;
+      border: 1px solid var(--border);
+      border-radius: 8px;
+      background: var(--panel);
+      overflow: hidden;
+    }
+
+    .graph-svg {
+      width: 100%;
+      height: 680px;
+      display: block;
+      touch-action: none;
+      user-select: none;
+    }
+
+    .graph-edge line {
+      stroke: #cbd5e1;
+      stroke-width: 1.25;
+      transition: stroke 140ms ease, stroke-width 140ms ease, opacity 140ms ease;
+    }
+
+    .graph-edge.state-edge line {
+      stroke: #fbbf24;
+      stroke-width: 1.6;
+      stroke-dasharray: 5 4;
+    }
+
+    .graph-edge.evolution-edge line {
+      stroke: #f97316;
+      stroke-width: 3.4;
+    }
+
+    .graph-edge.evolution-edge.inferred line {
+      stroke-dasharray: 8 5;
+    }
+
+    .graph-edge text {
+      fill: #64748b;
+      font-size: 10px;
+      opacity: 0.78;
+      pointer-events: none;
+      transition: opacity 140ms ease;
+    }
+
+    .graph-edge.evolution-edge text {
+      fill: #c2410c;
+      font-size: 12px;
+      font-weight: 900;
+      opacity: 1;
+    }
+
+    .graph-svg.top-connected .graph-edge text {
+      opacity: 0;
+    }
+
+    .graph-svg.top-connected.is-focused .graph-edge.is-active text {
+      opacity: .92;
+    }
+
+    .graph-node {
+      cursor: grab;
+    }
+
+    .graph-node:active {
+      cursor: grabbing;
+    }
+
+    .graph-node circle {
+      stroke: #ffffff;
+      stroke-width: 2.5;
+      filter: drop-shadow(0 7px 14px rgba(15, 23, 42, 0.16));
+      transition: r 140ms ease, opacity 140ms ease, stroke 140ms ease;
+    }
+
+    .graph-node rect {
+      stroke: #ffffff;
+      stroke-width: 2.5;
+      filter: drop-shadow(0 7px 14px rgba(15, 23, 42, 0.14));
+      transition: opacity 140ms ease, stroke 140ms ease;
+    }
+
+    .graph-node text {
+      fill: #172033;
+      font-size: 12px;
+      font-weight: 700;
+      paint-order: stroke;
+      stroke: rgba(255, 255, 255, 0.92);
+      stroke-width: 4px;
+      stroke-linejoin: round;
+      pointer-events: none;
+      transition: opacity 140ms ease;
+    }
+
+    .graph-svg.is-focused .graph-node,
+    .graph-svg.is-focused .graph-edge {
+      opacity: 0.22;
+    }
+
+    .graph-svg.is-focused .graph-node.is-active,
+    .graph-svg.is-focused .graph-edge.is-active {
+      opacity: 1;
+    }
+
+    .graph-edge.is-active line {
+      stroke: #2563eb;
+      stroke-width: 2.4;
+    }
+
+    .graph-edge.evolution-edge.is-active line {
+      stroke: #ea580c;
+      stroke-width: 4.2;
+    }
+
+    .graph-node.is-active circle {
+      stroke: #2563eb;
+    }
+
+    .graph-node.is-active rect {
+      stroke: #2563eb;
+    }
+
+    .graph-node .evolution-ring {
+      fill: none;
+      stroke: #ef4444;
+      stroke-width: 2.4;
+      stroke-dasharray: 5 4;
+      filter: none;
+    }
+
+    .graph-node .state-ring {
+      fill: none;
+      stroke: #f59e0b;
+      stroke-width: 2;
+      opacity: 0.85;
+      filter: none;
+    }
+
+    .graph-node .evolution-badge circle {
+      fill: #ef4444;
+      stroke: #ffffff;
+      stroke-width: 2;
+      filter: drop-shadow(0 4px 8px rgba(239, 68, 68, 0.25));
+    }
+
+    .graph-node .evolution-badge text {
+      fill: #ffffff;
+      stroke: none;
+      font-size: 11px;
+      font-weight: 900;
+    }
+
+    .graph-stats {
+      position: absolute;
+      top: 12px;
+      left: 12px;
+      z-index: 1;
+      padding: 7px 10px;
+      border: 1px solid var(--border);
+      border-radius: 8px;
+      background: rgba(255, 255, 255, 0.9);
+      color: var(--muted);
+      font-size: 12px;
+      box-shadow: 0 8px 20px rgba(15, 23, 42, 0.08);
+    }
+
+    .graph-side {
+      min-height: 680px;
+      padding: 14px;
+      border: 1px solid var(--border);
+      border-radius: 8px;
+      background: var(--panel);
+    }
+
+    .graph-side h3 {
+      margin: 0 0 8px;
+      font-size: 16px;
+    }
+
+    .graph-side pre {
+      margin: 0;
+      white-space: pre-wrap;
+      word-break: break-word;
+      color: var(--muted);
+      font-family: var(--font);
+      font-size: 13px;
+    }
+
+    .entity-tools {
+      display: grid;
+      grid-template-columns: 1fr auto;
+      gap: 8px;
+      margin: 12px 0;
+    }
+
+    .entity-list {
+      display: grid;
+      gap: 8px;
+      max-height: 220px;
+      overflow: auto;
+      padding-right: 2px;
+    }
+
+    .entity-row {
+      width: 100%;
+      display: grid;
+      grid-template-columns: minmax(0, 1fr) auto;
+      gap: 8px;
+      align-items: center;
+      min-height: auto;
+      padding: 8px 10px;
+      border: 1px solid var(--border);
+      border-radius: 8px;
+      background: var(--panel);
+      text-align: left;
+    }
+
+    .entity-row.is-active {
+      border-color: var(--primary);
+      box-shadow: 0 0 0 2px rgba(37, 99, 235, 0.12);
+    }
+
+    .entity-name {
+      min-width: 0;
+    }
+
+    .entity-name strong,
+    .entity-name span {
+      display: block;
+      overflow: hidden;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+    }
+
+    .entity-name span {
+      color: var(--muted);
+      font-size: 12px;
+      font-weight: 600;
+    }
+
+    .entity-badges {
+      display: flex;
+      flex-wrap: wrap;
+      justify-content: flex-end;
+      gap: 5px;
+    }
+
+    .badge.state {
+      background: var(--info-bg);
+      color: var(--primary);
+    }
+
+    .badge.multi-state {
+      background: var(--warning-bg);
+      color: var(--warning);
+    }
+
+    .badge.evolution {
+      background: #fee2e2;
+      color: #b91c1c;
+    }
+
+    .badge.no-state {
+      background: var(--panel-soft);
+      color: var(--muted);
+    }
+
+    .entity-hint {
+      margin: 8px 0 12px;
+      padding: 9px 10px;
+      border: 1px solid var(--border);
+      border-radius: 8px;
+      background: var(--info-bg);
+      color: #1d4ed8;
+      font-size: 12px;
+      font-weight: 700;
+    }
+
+    .detail-block {
+      display: grid;
+      gap: 8px;
+      margin-top: 12px;
+    }
+
+    .detail-block h4 {
+      margin: 0;
+      font-size: 14px;
+    }
+
+    .state-card,
+    .attribute-card,
+    .connection-card {
+      display: grid;
+      gap: 5px;
+      padding: 9px 10px;
+      border: 1px solid var(--border);
+      border-radius: 8px;
+      background: var(--panel-soft);
+      font-size: 12px;
+    }
+
+    .state-card strong,
+    .attribute-card strong,
+    .connection-card strong {
+      color: var(--text);
+      font-size: 13px;
+    }
+
+    .state-card span,
+    .attribute-card span,
+    .connection-card span {
+      color: var(--muted);
+    }
+
+    .attribute-card {
+      background: #f8fafc;
+    }
+
+    .attribute-key {
+      color: #1d4ed8;
+      font-weight: 900;
+    }
+
+    .pager {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 8px;
+      margin-top: 6px;
+      color: var(--muted);
+      font-size: 12px;
+      font-weight: 800;
+    }
+
+    .pager-actions {
+      display: inline-flex;
+      gap: 6px;
+      align-items: center;
+    }
+
+    .pager button {
+      min-height: 28px;
+      padding: 0 8px;
+      border-radius: 8px;
+      font-size: 12px;
+    }
+
+    .evolution-graph-card {
+      padding: 12px;
+      border: 1px solid var(--border);
+      border-radius: 8px;
+      background: #fff7ed;
+      overflow-x: auto;
+    }
+
+    .evolution-graph-card h4 {
+      margin: 0 0 8px;
+      color: #9a3412;
+      font-size: 14px;
+    }
+
+    .evolution-caption {
+      margin: 0 0 10px;
+      color: #9a3412;
+      font-size: 12px;
+      font-weight: 800;
+    }
+
+    .evolution-svg {
+      width: 100%;
+      min-width: 760px;
+      display: block;
+    }
+
+    .evolution-svg .evolution-path-line {
+      stroke: #f97316;
+      stroke-width: 2.4;
+      fill: none;
+    }
+
+    .evolution-svg .evolution-path-line.inferred {
+      stroke-dasharray: 6 5;
+    }
+
+    .evolution-svg .evolution-lane {
+      fill: #fffbeb;
+      stroke: #fed7aa;
+      stroke-width: 1;
+    }
+
+    .evolution-svg .evolution-node rect,
+    .evolution-svg .evolution-stage rect {
+      fill: #ffffff;
+      stroke: #fb923c;
+      stroke-width: 1.6;
+    }
+
+    .evolution-svg .evolution-stage rect {
+      fill: #fff7ed;
+      stroke-width: 2;
+    }
+
+    .evolution-svg text {
+      fill: #172033;
+      font-size: 11px;
+      font-weight: 800;
+    }
+
+    .evolution-svg .subtext {
+      fill: #64748b;
+      font-size: 10px;
+      font-weight: 700;
+    }
+
+    .evolution-svg .edge-label {
+      fill: #9a3412;
+      font-size: 10px;
+      font-weight: 900;
+    }
+
+    .job-section {
+      margin-top: 16px;
+    }
+
+    .job-board {
+      display: grid;
+      grid-template-columns: repeat(3, minmax(0, 1fr));
+      gap: 14px;
+      margin-top: 16px;
+      align-items: start;
+    }
+
+    .job-column {
+      min-width: 0;
+      border: 1px solid var(--border);
+      border-radius: 8px;
+      background: var(--panel);
+      overflow: hidden;
+    }
+
+    .job-column-head {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 10px;
+      padding: 12px 14px;
+      border-bottom: 1px solid var(--border);
+      background: var(--panel-soft);
+    }
+
+    .job-column-head h2 {
+      margin: 0;
+      font-size: 17px;
+      letter-spacing: 0;
+    }
+
+    .job-column-head span {
+      color: var(--muted);
+      font-size: 12px;
+      font-weight: 800;
+    }
+
+    .job-list {
+      display: grid;
+      gap: 10px;
+      padding: 12px;
+      max-height: 760px;
+      overflow: auto;
+    }
+
+    .job-card {
+      display: grid;
+      gap: 10px;
+      padding: 12px;
+      border: 1px solid var(--border);
+      border-radius: 8px;
+      background: #fff;
+    }
+
+    .job-card-head {
+      display: flex;
+      align-items: flex-start;
+      justify-content: space-between;
+      gap: 10px;
+    }
+
+    .job-title {
+      min-width: 0;
+    }
+
+    .job-title strong {
+      display: block;
+      overflow: hidden;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+      font-size: 14px;
+    }
+
+    .job-title span {
+      display: block;
+      color: var(--muted);
+      font-family: var(--mono);
+      font-size: 11px;
+      word-break: break-all;
+    }
+
+    .coverage-grid {
+      display: grid;
+      grid-template-columns: repeat(2, minmax(0, 1fr));
+      gap: 8px;
+    }
+
+    .coverage-item {
+      min-width: 0;
+      padding: 8px;
+      border-radius: 8px;
+      background: var(--panel-soft);
+    }
+
+    .coverage-item span {
+      display: block;
+      color: var(--muted);
+      font-size: 11px;
+      font-weight: 800;
+    }
+
+    .coverage-item strong {
+      display: block;
+      margin-top: 2px;
+      font-size: 15px;
+    }
+
+    .coverage-item.pending strong {
+      color: var(--muted);
+      font-weight: 700;
+    }
+
+    .job-progress {
+      margin: 10px 0;
+      padding: 9px 10px;
+      border: 1px solid var(--border);
+      border-radius: 8px;
+      background: var(--info-bg);
+      color: #1d4ed8;
+      font-size: 12px;
+      font-weight: 800;
+    }
+
+    .job-error {
+      color: var(--error);
+      font-size: 12px;
+      word-break: break-word;
+    }
+
+    .section-head {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 12px;
+      margin-bottom: 8px;
+    }
+
+    .section-head h2 {
+      margin: 0;
+      font-size: 18px;
+      letter-spacing: 0;
+    }
+
+    .section-head span {
+      color: var(--muted);
+      font-size: 12px;
+      font-weight: 700;
+    }
+
+    table {
+      width: 100%;
+      min-width: 1180px;
+      border-collapse: collapse;
+    }
+
+    th,
+    td {
+      padding: 11px 12px;
+      border-bottom: 1px solid var(--border);
+      text-align: left;
+      vertical-align: top;
+    }
+
+    th {
+      position: sticky;
+      top: 0;
+      z-index: 1;
+      background: var(--panel-soft);
+      color: var(--muted);
+      font-size: 12px;
+      font-weight: 800;
+    }
+
+    tbody tr:last-child td { border-bottom: 0; }
+
+    .mono {
+      font-family: var(--mono);
+      font-size: 12px;
+      word-break: break-all;
+    }
+
+    .muted { color: var(--muted); }
+
+    .badge {
+      display: inline-flex;
+      align-items: center;
+      min-height: 24px;
+      padding: 0 8px;
+      border-radius: 999px;
+      font-size: 12px;
+      font-weight: 800;
+      white-space: nowrap;
+    }
+
+    .badge.queued,
+    .badge.running {
+      background: var(--warning-bg);
+      color: var(--warning);
+    }
+
+    .badge.success {
+      background: var(--success-bg);
+      color: var(--success);
+    }
+
+    .badge.failed {
+      background: var(--error-bg);
+      color: var(--error);
+    }
+
+    .summary {
+      max-width: 360px;
+      color: var(--muted);
+      font-size: 13px;
+    }
+
+    .empty {
+      padding: 34px 20px;
+      color: var(--muted);
+      text-align: center;
+    }
+
+    .footer {
+      display: flex;
+      justify-content: space-between;
+      gap: 12px;
+      margin-top: 12px;
+      color: var(--muted);
+      font-size: 12px;
+    }
+
+    @media (max-width: 980px) {
+      .topbar,
+      .toolbar {
+        grid-template-columns: 1fr;
+      }
+
+      .topbar {
+        align-items: flex-start;
+        flex-direction: column;
+      }
+
+      .metrics {
+        grid-template-columns: repeat(2, minmax(0, 1fr));
+      }
+
+      .actions {
+        justify-content: flex-start;
+      }
+
+      .graph-panel {
+        grid-template-columns: 1fr;
+      }
+
+      .job-board {
+        grid-template-columns: 1fr;
+      }
+    }
+  </style>
+</head>
+<body>
+  <main class="shell">
+    <header class="topbar">
+      <div class="brand">
+        <div class="eyebrow">HmRAGCLI</div>
+        <h1>知识图谱任务管理</h1>
+      </div>
+      <nav class="nav" aria-label="页面导航">
+        <a href="/">首页</a>
+        <a href="/ui/graph-pipeline.html">图谱流程</a>
+        <a href="/ui/ops.html">运维台</a>
+        <a href="/ui/graph-governance.html">属性治理</a>
+        <a href="http://127.0.0.1:7474/browser/" target="_blank" rel="noreferrer">Neo4j Browser</a>
+      </nav>
+    </header>
+    <nav class="stage-nav" aria-label="图谱流程">
+      <a class="stage-link" href="/ui/graph-pipeline.html"><span>0</span><strong>总览</strong></a>
+      <a class="stage-link" href="/ui/graph-extract.html"><span>1</span><strong>抽取任务</strong></a>
+      <a class="stage-link" href="/ui/graph-local.html"><span>2</span><strong>局部结果</strong></a>
+      <a class="stage-link" href="/ui/graph-governance.html"><span>3</span><strong>属性治理</strong></a>
+      <a class="stage-link" href="/ui/graph-structure.html"><span>4</span><strong>结构增强</strong></a>
+      <a class="stage-link" href="/ui/graph-fusion.html"><span>5</span><strong>实体融合</strong></a>
+      <a class="stage-link active" href="/ui/graph.html"><span>6</span><strong>图谱浏览</strong></a>
+      <a class="stage-link" href="/ui/graph-quality.html"><span>7</span><strong>质量评估</strong></a>
+    </nav>
+
+    <section class="toolbar" aria-label="筛选与操作">
+      <label>
+        状态
+        <select id="status">
+          <option value="">全部</option>
+          <option value="queued">queued</option>
+          <option value="running">running</option>
+          <option value="success">success</option>
+          <option value="failed">failed</option>
+        </select>
+      </label>
+      <label>
+        拉取数量
+        <input id="limit" type="number" min="1" max="200" value="100" />
+      </label>
+      <label>
+        数据源 ID（补建时可选）
+        <input id="dataSourceId" type="text" placeholder="留空表示全部数据源" />
+      </label>
+      <div class="actions">
+        <button id="refreshBtn" type="button">刷新</button>
+        <button id="backfillBtn" type="button" class="primary">补建未构建图谱</button>
+        <button id="batchBuildBtn" type="button">批量开始图谱抽取</button>
+        <button id="batchRebuildBtn" type="button">重建成功任务</button>
+        <button id="fusionBtn" type="button">执行实体融合</button>
+        <button id="stateFusionBtn" type="button">执行状态融合</button>
+        <button id="transitionBtn" type="button">构建演化链</button>
+      </div>
+    </section>
+
+    <section class="metrics" aria-label="任务统计">
+      <div class="metric"><span>全部</span><strong id="countAll">0</strong></div>
+      <div class="metric"><span>排队</span><strong id="countQueued">0</strong></div>
+      <div class="metric"><span>运行</span><strong id="countRunning">0</strong></div>
+      <div class="metric"><span>成功</span><strong id="countSuccess">0</strong></div>
+      <div class="metric"><span>失败</span><strong id="countFailed">0</strong></div>
+    </section>
+
+    <div id="notice" class="notice"></div>
+
+    <section class="template-editor" aria-label="实体类型治理模板">
+      <div class="section-head">
+        <h2>实体类型治理模板</h2>
+        <span>用于后续属性归类、状态识别和演化治理；不参与基础抽取 prompt。</span>
+      </div>
+      <textarea id="templateEditor" spellcheck="false" placeholder="实体类型模板 JSON"></textarea>
+      <div class="actions" style="justify-content:flex-start;">
+        <button id="loadTemplatesBtn" type="button">读取模板</button>
+        <button id="saveTemplatesBtn" type="button" class="primary">保存模板</button>
+      </div>
+    </section>
+
+    <section class="job-section" aria-label="图谱浏览">
+      <div class="section-head">
+        <h2>图谱浏览</h2>
+        <span>查看已融合的实体关系；状态在右侧实体详情中查看</span>
+      </div>
+      <section class="toolbar" aria-label="图谱浏览操作" style="padding-top:0;">
+        <label>
+          实体数量
+          <input id="graphLimit" type="number" min="10" max="120" value="50" />
+        </label>
+        <label>
+          筛选实体
+          <input id="graphFilter" type="text" placeholder="输入实体名称过滤当前视图" />
+        </label>
+        <div></div>
+        <div class="actions">
+          <button id="loadGraphBtn" type="button" class="primary">查看图谱</button>
+          <button id="topConnectedBtn" type="button">高连接实体 Top 60</button>
+          <button id="backToOverviewBtn" type="button" style="display:none;">返回全局图</button>
+        </div>
+      </section>
+      <div class="graph-panel">
+        <div class="graph-canvas">
+          <div id="graphStats" class="graph-stats">图谱尚未加载</div>
+          <svg id="graphSvg" class="graph-svg" role="img" aria-label="知识图谱"></svg>
+        </div>
+        <aside class="graph-side">
+          <h3 id="graphDetailTitle">未选择节点</h3>
+          <div class="entity-tools">
+            <input id="entitySearch" type="text" placeholder="搜索实体，查看状态与全连接" />
+            <button id="entitySearchBtn" type="button">搜索</button>
+          </div>
+          <div class="entity-hint" id="entityHint">有“多状态”标记的实体存在多个 EntityState，可查看不同阶段定义。</div>
+          <div id="entityList" class="entity-list"><div class="empty">实体清单加载中...</div></div>
+          <div class="detail-block">
+            <h4>实体详情</h4>
+            <div class="actions" style="justify-content:flex-start;margin-bottom:10px;">
+              <button id="enrichEntityBtn" type="button" style="display:none;">深化该实体</button>
+            </div>
+            <pre id="graphDetail">点击图中的实体或实体清单，查看状态、来源与全部连接。</pre>
+            <div id="stateList"></div>
+            <div id="connectionList"></div>
+          </div>
+        </aside>
+      </div>
+    </section>
+
+    <section class="job-board" aria-label="图谱任务看板">
+      <section class="job-column" aria-label="运行中的图谱任务">
+        <div class="job-column-head">
+          <h2>运行中</h2>
+          <span id="runningCount">0</span>
+        </div>
+        <div id="runningRows" class="job-list"><div class="empty">正在加载...</div></div>
+      </section>
+      <section class="job-column" aria-label="失败的图谱任务">
+        <div class="job-column-head">
+          <h2>失败</h2>
+          <span id="failedCount">0</span>
+        </div>
+        <div id="failedRows" class="job-list"><div class="empty">正在加载...</div></div>
+      </section>
+      <section class="job-column" aria-label="成功的图谱任务">
+        <div class="job-column-head">
+          <h2>成功</h2>
+          <span id="successCount">0</span>
+        </div>
+        <div id="successRows" class="job-list"><div class="empty">正在加载...</div></div>
+      </section>
+    </section>
+
+    <footer class="footer">
+      <span id="lastLoaded">尚未刷新</span>
+      <label style="display:flex;grid-template-columns:auto 1fr;align-items:center;gap:8px;font-weight:700;">
+        <input id="autoRefresh" type="checkbox" style="width:auto;min-height:auto;" checked />
+        每 5 秒自动刷新
+      </label>
+    </footer>
+  </main>
+
+  <script>
+    const API_BASE = "/api/v1/knowledge-graph";
+    const state = {
+      jobs: [],
+      loading: false,
+      autoTimer: null,
+      rowActions: new Set(),
+      templates: [],
+      graph: {
+        nodes: [],
+        edges: [],
+        rawOverview: null,
+        mode: "overview",
+        selectedDetail: null,
+        selectedEntityId: null,
+        animationId: null,
+        draggingId: null,
+        hoveredId: null,
+        ticks: 0
+      },
+      pages: {
+        entity: 1,
+        states: 1,
+        connections: 1,
+        commonConnections: 1,
+        transitions: 1
+      },
+      entities: []
+    };
+
+    const el = {
+      status: document.getElementById("status"),
+      limit: document.getElementById("limit"),
+      dataSourceId: document.getElementById("dataSourceId"),
+      refreshBtn: document.getElementById("refreshBtn"),
+      backfillBtn: document.getElementById("backfillBtn"),
+      batchBuildBtn: document.getElementById("batchBuildBtn"),
+      batchRebuildBtn: document.getElementById("batchRebuildBtn"),
+      fusionBtn: document.getElementById("fusionBtn"),
+      stateFusionBtn: document.getElementById("stateFusionBtn"),
+      transitionBtn: document.getElementById("transitionBtn"),
+      loadTemplatesBtn: document.getElementById("loadTemplatesBtn"),
+      saveTemplatesBtn: document.getElementById("saveTemplatesBtn"),
+      templateEditor: document.getElementById("templateEditor"),
+      notice: document.getElementById("notice"),
+      runningRows: document.getElementById("runningRows"),
+      failedRows: document.getElementById("failedRows"),
+      successRows: document.getElementById("successRows"),
+      lastLoaded: document.getElementById("lastLoaded"),
+      autoRefresh: document.getElementById("autoRefresh"),
+      countAll: document.getElementById("countAll"),
+      countQueued: document.getElementById("countQueued"),
+      countRunning: document.getElementById("countRunning"),
+      countSuccess: document.getElementById("countSuccess"),
+      countFailed: document.getElementById("countFailed"),
+      runningCount: document.getElementById("runningCount"),
+      failedCount: document.getElementById("failedCount"),
+      successCount: document.getElementById("successCount"),
+      graphLimit: document.getElementById("graphLimit"),
+      graphFilter: document.getElementById("graphFilter"),
+      loadGraphBtn: document.getElementById("loadGraphBtn"),
+      topConnectedBtn: document.getElementById("topConnectedBtn"),
+      backToOverviewBtn: document.getElementById("backToOverviewBtn"),
+      graphStats: document.getElementById("graphStats"),
+      graphSvg: document.getElementById("graphSvg"),
+      graphDetailTitle: document.getElementById("graphDetailTitle"),
+      graphDetail: document.getElementById("graphDetail"),
+      enrichEntityBtn: document.getElementById("enrichEntityBtn"),
+      entitySearch: document.getElementById("entitySearch"),
+      entitySearchBtn: document.getElementById("entitySearchBtn"),
+      entityHint: document.getElementById("entityHint"),
+      entityList: document.getElementById("entityList"),
+      stateList: document.getElementById("stateList"),
+      connectionList: document.getElementById("connectionList")
+    };
+
+    function buildQuery(params) {
+      const query = new URLSearchParams();
+      Object.entries(params).forEach(([key, value]) => {
+        if (value !== undefined && value !== null && String(value).trim() !== "") {
+          query.set(key, String(value).trim());
+        }
+      });
+      const text = query.toString();
+      return text ? `?${text}` : "";
+    }
+
+    async function request(url, options) {
+      const response = await fetch(url, {
+        headers: { "Accept": "application/json" },
+        ...options
+      });
+      if (!response.ok) {
+        const text = await response.text();
+        throw new Error(text || `HTTP ${response.status}`);
+      }
+      return response.json();
+    }
+
+    function showNotice(message, isError) {
+      el.notice.textContent = message;
+      el.notice.className = isError ? "notice error" : "notice";
+      el.notice.style.display = message ? "block" : "none";
+    }
+
+    function formatTime(value) {
+      if (!value) return "-";
+      const date = new Date(value);
+      return Number.isNaN(date.getTime()) ? String(value) : date.toLocaleString();
+    }
+
+    function escapeHtml(value) {
+      return String(value ?? "")
+        .replaceAll("&", "&amp;")
+        .replaceAll("<", "&lt;")
+        .replaceAll(">", "&gt;")
+        .replaceAll('"', "&quot;")
+        .replaceAll("'", "&#039;");
+    }
+
+    function numberValue(value) {
+      const number = Number(value ?? 0);
+      return Number.isFinite(number) ? number : 0;
+    }
+
+    function hasValue(data, key) {
+      return data && Object.prototype.hasOwnProperty.call(data, key) && data[key] !== null && data[key] !== undefined && data[key] !== "";
+    }
+
+    function coverageValue(data, key, fallback = "-") {
+      return hasValue(data, key) ? numberValue(data[key]) : fallback;
+    }
+
+    function runningBatchLabel(summary) {
+      const current = summary && typeof summary.currentExtractionBatch === "object" ? summary.currentExtractionBatch : null;
+      if (!current) return null;
+      const batchNo = current.batchNo ?? "-";
+      const batchCount = current.batchCount ?? "-";
+      const status = current.status || "running";
+      return `当前批次 ${batchNo} / ${batchCount}（${status}）`;
+    }
+
+    function coverageItems(summary, status) {
+      const data = summary && typeof summary === "object" ? summary : {};
+      const normalizedStatus = String(status || "").toLowerCase();
+      const isFinal = normalizedStatus === "success";
+      const current = data.currentExtractionBatch && typeof data.currentExtractionBatch === "object" ? data.currentExtractionBatch : {};
+      const batchProgress = current.batchNo && current.batchCount ? `${current.batchNo} / ${current.batchCount}` : "-";
+      return [
+        ["总 chunk 数", coverageValue(data, "chunkCount", isFinal ? 0 : "-")],
+        ["选中抽取 chunk", coverageValue(data, "selectedChunkCount", "-")],
+        ["成功抽取 chunk", coverageValue(data, "extractedChunkCount", isFinal ? 0 : "-")],
+        ["批次数", coverageValue(data, "batchCount", batchProgress)],
+        ["失败批次", coverageValue(data, "failedBatchCount", isFinal ? 0 : "-")],
+        ["每批 chunk", coverageValue(data, "chunkBatchSize", current.chunkCount ?? "-")],
+        ["实体提及", coverageValue(data, "entityMentions", isFinal ? 0 : "-")],
+        ["事实数", coverageValue(data, "facts", isFinal ? 0 : "-")],
+        ["关系数", coverageValue(data, "relations", isFinal ? 0 : "-")],
+        ["属性事实", coverageValue(data, "attributeFacts", isFinal ? 0 : "-")],
+        ["演化事实", coverageValue(data, "transitionFacts", isFinal ? 0 : "-")],
+        ["融合簇", coverageValue(data, "entityFusionGroups", "-")],
+        ["状态融合", coverageValue(data, "stateFusionGroups", "-")],
+        ["演化边", coverageValue(data, "transitionEdges", "-")],
+        ["同义边", coverageValue(data, "entityFusionSameAsEdges", "-")]
+      ];
+    }
+
+    function renderCoverage(summary, status) {
+      return `<div class="coverage-grid">${coverageItems(summary, status).map(([label, value]) => `
+        <div class="coverage-item${value === "-" ? " pending" : ""}">
+          <span>${escapeHtml(label)}</span>
+          <strong>${escapeHtml(value)}</strong>
+        </div>
+      `).join("")}</div>`;
+    }
+
+    function statusClass(status) {
+      const normalized = String(status || "").toLowerCase();
+      return ["queued", "running", "success", "failed"].includes(normalized) ? normalized : "queued";
+    }
+
+    function setBusy(isBusy) {
+      state.loading = isBusy;
+      el.refreshBtn.disabled = isBusy;
+      el.backfillBtn.disabled = isBusy;
+      el.batchBuildBtn.disabled = isBusy;
+      el.batchRebuildBtn.disabled = isBusy;
+      el.fusionBtn.disabled = isBusy;
+      el.stateFusionBtn.disabled = isBusy;
+      el.transitionBtn.disabled = isBusy;
+      el.refreshBtn.textContent = isBusy ? "刷新中..." : "刷新";
+    }
+
+    function renderCounts() {
+      const counts = state.jobs.reduce((acc, job) => {
+        const key = String(job.status || "unknown").toLowerCase();
+        acc[key] = (acc[key] || 0) + 1;
+        acc.all += 1;
+        return acc;
+      }, { all: 0 });
+      el.countAll.textContent = counts.all || 0;
+      el.countQueued.textContent = counts.queued || 0;
+      el.countRunning.textContent = counts.running || 0;
+      el.countSuccess.textContent = counts.success || 0;
+      el.countFailed.textContent = counts.failed || 0;
+    }
+
+    function renderJobRows(jobs, emptyText) {
+      if (!jobs.length) {
+        return `<div class="empty">${escapeHtml(emptyText)}</div>`;
+      }
+      return jobs.map(job => {
+        const id = escapeHtml(job.id);
+        const sourceFileId = escapeHtml(job.sourceFileId);
+        const sourceFileShort = sourceFileId ? `${sourceFileId.slice(0, 8)}...` : "-";
+        const docId = escapeHtml(job.docId);
+        const docShort = docId ? `${docId.slice(0, 8)}...` : "-";
+        const actionBusy = state.rowActions.has(job.id);
+        const normalizedStatus = String(job.status || "").toLowerCase();
+        const canRetry = normalizedStatus === "failed" || normalizedStatus === "success";
+        const error = job.errorMessage ? `<div class="job-error">${escapeHtml(job.errorMessage)}</div>` : "";
+        const progress = runningBatchLabel(job.outputSummary);
+        const progressMarkup = progress ? `<div class="job-progress">${escapeHtml(progress)}</div>` : "";
+        const coverage = renderCoverage(job.outputSummary, job.status);
+        const action = canRetry
+          ? `<button type="button" class="danger" data-job-id="${id}" ${actionBusy ? "disabled" : ""}>${actionBusy ? "提交中..." : "重新开始"}</button>`
+          : `<span class="muted">-</span>`;
+        return `
+          <article class="job-card">
+            <div class="job-card-head">
+              <div class="job-title">
+                <strong title="${docId}">${docShort}</strong>
+                <span title="${sourceFileId}">文件 ${sourceFileShort}</span>
+              </div>
+              <span class="badge ${statusClass(job.status)}">${escapeHtml(job.status || "-")}</span>
+            </div>
+            <div class="muted">阶段：${escapeHtml(job.stage || "-")} / 触发：${escapeHtml(job.triggerSource || "-")}</div>
+            ${progressMarkup}
+            ${coverage}
+            ${error}
+            <div class="muted">更新时间：${escapeHtml(formatTime(job.updatedAt || job.createdAt))}</div>
+            <div class="actions" style="justify-content:flex-start;">${action}</div>
+          </article>
+        `;
+      }).join("");
+    }
+
+    function renderRows() {
+      const running = state.jobs.filter(job => ["queued", "running"].includes(String(job.status || "").toLowerCase()));
+      const failed = state.jobs.filter(job => String(job.status || "").toLowerCase() === "failed");
+      const success = state.jobs.filter(job => String(job.status || "").toLowerCase() === "success");
+      el.runningCount.textContent = running.length;
+      el.failedCount.textContent = failed.length;
+      el.successCount.textContent = success.length;
+      el.runningRows.innerHTML = renderJobRows(running, "暂无运行中的图谱任务");
+      el.failedRows.innerHTML = renderJobRows(failed, "暂无失败任务");
+      el.successRows.innerHTML = renderJobRows(success, "暂无成功任务");
+    }
+
+    function stateBadge(entity) {
+      const count = numberValue(entity.stateCount);
+      const transitionCount = numberValue(entity.transitionCount);
+      const badges = [];
+      if (count > 1) badges.push(`<span class="badge multi-state">多状态 ${count}</span>`);
+      else if (count === 1) badges.push(`<span class="badge state">有状态 1</span>`);
+      else badges.push(`<span class="badge no-state">无状态</span>`);
+      if (transitionCount > 0) badges.push(`<span class="badge evolution">有演化 ${transitionCount}</span>`);
+      return badges.join("");
+    }
+
+    function clampPage(scope, total, pageSize) {
+      const maxPage = Math.max(1, Math.ceil(total / pageSize));
+      const current = Math.max(1, Math.min(numberValue(state.pages[scope]) || 1, maxPage));
+      state.pages[scope] = current;
+      return { current, maxPage };
+    }
+
+    function pageSlice(items, scope, pageSize) {
+      const list = Array.isArray(items) ? items : [];
+      const { current, maxPage } = clampPage(scope, list.length, pageSize);
+      const start = (current - 1) * pageSize;
+      return {
+        items: list.slice(start, start + pageSize),
+        current,
+        maxPage,
+        start,
+        total: list.length,
+        pageSize
+      };
+    }
+
+    function renderPager(scope, page) {
+      if (!page || page.total <= page.pageSize) return "";
+      const from = page.total ? page.start + 1 : 0;
+      const to = Math.min(page.start + page.pageSize, page.total);
+      return `
+        <div class="pager">
+          <span>${from}-${to} / ${page.total}</span>
+          <span class="pager-actions">
+            <button type="button" data-page-scope="${scope}" data-page="${page.current - 1}" ${page.current <= 1 ? "disabled" : ""}>上一页</button>
+            <span>${page.current} / ${page.maxPage}</span>
+            <button type="button" data-page-scope="${scope}" data-page="${page.current + 1}" ${page.current >= page.maxPage ? "disabled" : ""}>下一页</button>
+          </span>
+        </div>
+      `;
+    }
+
+    function renderEntityList() {
+      if (!state.entities.length) {
+        el.entityList.innerHTML = `<div class="empty">暂无实体，或没有匹配搜索条件</div>`;
+        return;
+      }
+      const page = pageSlice(state.entities, "entity", 30);
+      el.entityList.innerHTML = page.items.map(entity => {
+        const active = entity.id === state.graph.selectedEntityId ? " is-active" : "";
+        return `
+          <button type="button" class="entity-row${active}" data-entity-id="${escapeHtml(entity.id)}">
+            <span class="entity-name">
+              <strong title="${escapeHtml(entity.label || "")}">${escapeHtml(entity.label || "未命名实体")}</strong>
+              <span>${escapeHtml(entity.type || "-")} · 连接 ${numberValue(entity.factCount)}</span>
+            </span>
+            <span class="entity-badges">
+              ${stateBadge(entity)}
+            </span>
+          </button>
+        `;
+      }).join("") + renderPager("entity", page);
+    }
+
+    function renderStates(states) {
+      const items = Array.isArray(states) ? states : [];
+      if (!items.length) {
+        el.stateList.innerHTML = `<div class="empty">该实体没有 EntityState。需要重新抽取或检查实体抽取结果。</div>`;
+        return;
+      }
+      const page = pageSlice(items, "states", 6);
+      el.stateList.innerHTML = `
+        <div class="detail-block">
+          <h4>EntityState（${items.length}）</h4>
+          ${page.items.map(item => `
+            <div class="state-card">
+              <strong>状态 ${escapeHtml(item.stateOrder || "-")}：${escapeHtml(item.name || "未命名状态")}${numberValue(item.stateMemberCount) > 1 ? `（合并 ${numberValue(item.stateMemberCount)} 条重复状态）` : ""}</strong>
+              <span>定义：${escapeHtml(item.definition || "-")}</span>
+              <span>有效期：${escapeHtml(item.validFrom || "-")} 至 ${escapeHtml(item.validTo || "-")}</span>
+              <span>提及 ${numberValue(item.mentionCount)} · 置信度 ${escapeHtml(item.confidence ?? "-")}</span>
+              <span>来源：${escapeHtml(formatSources(item.sources, item.docIds))}</span>
+              ${renderAttributeLines(item.attributes)}
+              <span>状态关系：${numberValue((item.connections || []).length)} 条</span>
+              ${(item.connections || []).slice(0, 8).map(connection => {
+                const direction = connection.direction === "out" ? "指向" : "来自";
+                return `<span>${escapeHtml(direction)} ${escapeHtml(connection.otherName || "未知实体")}：${escapeHtml(connection.relationType || "-")}，${escapeHtml(connection.statement || "-")}</span>`;
+              }).join("")}
+            </div>
+          `).join("")}
+          ${renderPager("states", page)}
+        </div>
+      `;
+    }
+
+    function renderAttributeLines(attributes) {
+      const items = Array.isArray(attributes) ? attributes : [];
+      if (!items.length) return `<span>属性事实：暂无</span>`;
+      return `
+        <span>属性事实：</span>
+        ${items.slice(0, 12).map(attribute => `<span class="attribute-line">${escapeHtml(attribute.attributeKey || "-")} = ${escapeHtml(attribute.attributeValue || attribute.statement || "-")}</span>`).join("")}
+      `;
+    }
+
+    function renderEntityAttributes(attributes) {
+      const items = Array.isArray(attributes) ? attributes : [];
+      if (!items.length) {
+        return `
+          <div class="detail-block">
+            <h4>实体属性</h4>
+            <div class="empty">暂无正式属性。属性治理后会在这里以卡片形式显示。</div>
+          </div>
+        `;
+      }
+      const grouped = new Map();
+      items.forEach(item => {
+        const key = item.stateKey || "entity";
+        if (!grouped.has(key)) grouped.set(key, []);
+        grouped.get(key).push(item);
+      });
+      return `
+        <div class="detail-block">
+          <h4>实体属性（${items.length}）</h4>
+          ${[...grouped.entries()].map(([stateKey, group]) => `
+            <div class="attribute-card">
+              <strong>${escapeHtml(stateKey === "entity" ? "实体属性" : cleanStateKey(stateKey))}</strong>
+              ${group.slice(0, 12).map(attribute => `
+                <span><span class="attribute-key">${escapeHtml(attribute.attributeKey || "-")}</span>：${escapeHtml(attribute.attributeValue || attribute.statement || "-")}</span>
+              `).join("")}
+              ${group.length > 12 ? `<span>还有 ${group.length - 12} 条属性未展开</span>` : ""}
+            </div>
+          `).join("")}
+        </div>
+      `;
+    }
+
+    function formatSources(sources, fallbackDocIds) {
+      const items = Array.isArray(sources) ? sources : [];
+      if (items.length) {
+        return items.slice(0, 4).map(item => {
+          const name = item.sourceFilename || item.title || item.relativePath || item.docId || "-";
+          const page = item.pageNo ? ` p.${item.pageNo}` : "";
+          const chunk = item.chunkId ? ` chunk:${String(item.chunkId).slice(0, 8)}` : "";
+          return `${name}${page}${chunk}`;
+        }).join("；");
+      }
+      return Array.isArray(fallbackDocIds) && fallbackDocIds.length ? fallbackDocIds.join(", ") : "-";
+    }
+
+    function connectionStatePartition(connections, states) {
+      const items = Array.isArray(connections) ? connections : [];
+      const stateKeys = new Set((Array.isArray(states) ? states : [])
+        .map(item => item.stateKey || "")
+        .filter(Boolean));
+      if (!stateKeys.size) {
+        return { phaseSpecific: items, common: [] };
+      }
+      return items.reduce((result, item) => {
+        const ownerStateKey = item.ownerStateKey || "";
+        const otherStateKey = item.otherStateKey || "";
+        if (stateKeys.has(ownerStateKey) || stateKeys.has(otherStateKey)) {
+          result.phaseSpecific.push(item);
+        } else {
+          result.common.push(item);
+        }
+        return result;
+      }, { phaseSpecific: [], common: [] });
+    }
+
+    function renderConnectionCards(items, pageScope, title, emptyText) {
+      if (!items.length) {
+        return `
+          <div class="detail-block">
+            <h4>${escapeHtml(title)}（0）</h4>
+            <div class="empty">${escapeHtml(emptyText)}</div>
+          </div>
+        `;
+      }
+      const page = pageSlice(items, pageScope, 10);
+      return `
+        <div class="detail-block">
+          <h4>${escapeHtml(title)}（${items.length}）</h4>
+          ${page.items.map(item => {
+            const direction = item.direction === "out" ? "指向" : "来自";
+            return `
+              <div class="connection-card">
+                <strong>${escapeHtml(direction)}：${escapeHtml(item.otherName || "未知实体")}</strong>
+                <span>关系：${escapeHtml(item.relationType || "-")}</span>
+                <span>事实：${escapeHtml(item.statement || "-")}</span>
+                <span>有效期：${escapeHtml(item.validFrom || "-")} 至 ${escapeHtml(item.validTo || "-")} · 置信度 ${escapeHtml(item.confidence ?? "-")}</span>
+                <span>证据文档：${escapeHtml((item.docIds || []).join(", ") || "-")}</span>
+              </div>
+            `;
+          }).join("")}
+          ${renderPager(pageScope, page)}
+        </div>
+      `;
+    }
+
+    function renderConnections(connections, states) {
+      const items = Array.isArray(connections) ? connections : [];
+      if (!items.length) {
+        el.connectionList.innerHTML = `<div class="empty">该实体暂无事实连接。</div>`;
+        return;
+      }
+      const partition = connectionStatePartition(items, states);
+      if (partition.common.length && Array.isArray(states) && states.length) {
+        el.connectionList.innerHTML = [
+          renderConnectionCards(partition.phaseSpecific, "connections", "阶段专属连接", "暂无明确分到阶段的连接。"),
+          renderConnectionCards(partition.common, "commonConnections", "共同/未分期连接", "暂无共同关系。")
+        ].join("");
+        return;
+      }
+      el.connectionList.innerHTML = renderConnectionCards(partition.phaseSpecific, "connections", "全部连接", "该实体暂无事实连接。");
+    }
+
+    function buildEntityRelationGraph(entity, connections, states, transitions) {
+      const centerId = entity.id || "";
+      const centerLabel = entity.label || "实体";
+      const nodes = new Map();
+      const sortedStates = (Array.isArray(states) ? states : [])
+        .slice()
+        .sort((left, right) => numberValue(left.stateOrder) - numberValue(right.stateOrder));
+      const stateByKey = new Map(sortedStates.map(item => [item.stateKey, item]));
+      const hasPhaseView = sortedStates.length > 0;
+      const changesByTargetState = new Map();
+      (Array.isArray(transitions) ? transitions : []).forEach(transition => {
+        const key = transition.toStateKey || "";
+        if (!key) return;
+        if (!changesByTargetState.has(key)) changesByTargetState.set(key, []);
+        changesByTargetState.get(key).push(transition);
+      });
+      if (!hasPhaseView) {
+        nodes.set(centerId, {
+          id: centerId,
+          label: centerLabel,
+          type: entity.type || "Other",
+          canonicalName: entity.clusterName || centerLabel,
+          fusionKey: entity.fusionKey || "",
+          stateCount: numberValue(entity.stateCount),
+          transitionCount: numberValue(entity.transitionCount)
+        });
+      }
+      const edges = [];
+      sortedStates.forEach((stateItem, index) => {
+        const stateId = stateItem.stateKey || `${centerId}:state:${index}`;
+        const period = [stateItem.validFrom || "", stateItem.validTo || ""].filter(Boolean).join(" 至 ");
+        const stateName = stateItem.name || `阶段 ${stateItem.stateOrder || index + 1}`;
+        const changeSummary = (changesByTargetState.get(stateId) || [])
+          .map(item => item.sourceEntityName || item.reason || "")
+          .filter(Boolean)
+          .slice(0, 4)
+          .join("；");
+        nodes.set(stateId, {
+          id: stateId,
+          label: centerLabel,
+          type: "EntityState",
+          canonicalName: stateItem.definition || stateItem.name || "",
+          fusionKey: "",
+          stateCount: 0,
+          transitionCount: 0,
+          isStateNode: true,
+          isPhaseCopy: true,
+          definition: stateItem.definition || "",
+          validFrom: stateItem.validFrom || "",
+          validTo: stateItem.validTo || "",
+          stateOrder: stateItem.stateOrder || index + 1,
+          stateName,
+          period,
+          changeSummary,
+          sources: stateItem.sources || []
+        });
+      });
+      if (sortedStates.length > 1) {
+        for (let index = 1; index < sortedStates.length; index += 1) {
+          const fromState = sortedStates[index - 1];
+          const toState = sortedStates[index];
+          const changes = changesByTargetState.get(toState.stateKey) || [];
+          const changeText = changes
+            .map(item => item.sourceEntityName || item.reason || "")
+            .filter(Boolean)
+            .slice(0, 4)
+            .join("；");
+          edges.push({
+            id: `${fromState.stateKey}:EVOLVES_TO:${toState.stateKey}`,
+            source: fromState.stateKey,
+            target: toState.stateKey,
+            type: "EVOLVES_TO",
+            label: changeText || toState.definition || "阶段演化",
+            confidence: changes.reduce((max, item) => Math.max(max, Number(item.confidence || 0)), 0),
+            docIds: changes.flatMap(item => item.docIds || []).slice(0, 5),
+            isEvolutionEdge: true,
+            inferred: changes.some(item => item.inferred)
+          });
+        }
+      } else {
+        (Array.isArray(transitions) ? transitions : []).forEach((transition, index) => {
+          const sourceId = transition.sourceEntityId || transition.fromStateKey || `${centerId}:evolution-source:${index}`;
+          const targetId = transition.toStateKey || transition.targetEntityId || `${centerId}:evolution-target:${index}`;
+          if (!nodes.has(sourceId)) {
+            nodes.set(sourceId, {
+              id: sourceId,
+              label: transition.sourceEntityName || cleanStateKey(transition.fromStateKey) || "变化点",
+              type: "EvolutionChange",
+              canonicalName: transition.reason || "",
+              fusionKey: "",
+              stateCount: 0,
+              transitionCount: 0,
+              isEvolutionNode: true
+            });
+          }
+          edges.push({
+            id: `${sourceId}:EVOLVES_TO:${targetId}:${index}`,
+            source: sourceId,
+            target: targetId,
+            type: "EVOLVES_TO",
+            label: transition.reason || transition.transitionType || "演化",
+            confidence: transition.confidence ?? 0,
+            docIds: transition.docIds || [],
+            isEvolutionEdge: true,
+            inferred: Boolean(transition.inferred)
+          });
+        });
+      }
+      (Array.isArray(connections) ? connections : []).forEach((connection, index) => {
+        const otherId = connection.otherId || `${centerId}:other:${index}`;
+        const outgoing = connection.direction === "out";
+        const ownerStateKey = connection.ownerStateKey || "";
+        const otherStateKey = connection.otherStateKey || "";
+        const ownerHasPhase = stateByKey.has(ownerStateKey);
+        const otherHasPhase = stateByKey.has(otherStateKey);
+        if (hasPhaseView && !ownerHasPhase && !otherHasPhase) {
+          return;
+        }
+        if (!nodes.has(otherId)) {
+          nodes.set(otherId, {
+            id: otherId,
+            label: connection.otherName || "未知实体",
+            type: connection.otherType || "Other",
+            canonicalName: connection.otherName || "",
+            fusionKey: "",
+            stateCount: 0,
+            transitionCount: 0
+          });
+        }
+        const ownerPhaseId = ownerHasPhase ? ownerStateKey : centerId;
+        const otherPhaseId = otherHasPhase ? otherStateKey : otherId;
+        edges.push({
+          id: connection.factKey || `${centerId}:${otherId}:${index}`,
+          source: outgoing ? ownerPhaseId : otherPhaseId,
+          target: outgoing ? otherPhaseId : ownerPhaseId,
+          type: connection.relationType || "related_to",
+          label: connection.statement || connection.relationType || "related_to",
+          confidence: connection.confidence ?? 0,
+          docIds: connection.docIds || []
+        });
+      });
+      return {
+        nodes: [...nodes.values()],
+        edges,
+        stats: {
+          entities: nodes.size,
+          states: numberValue(entity.stateCount),
+          facts: edges.length,
+          clusters: 0
+        },
+        scope: "entity",
+        centerEntityId: centerId,
+        centerEntityLabel: centerLabel
+      };
+    }
+    function renderTransitions(transitions, states) {
+      const items = Array.isArray(transitions) ? transitions : [];
+      if (!items.length) {
+        return `<div class="empty">该实体暂无演化链。完成状态融合和演化构建后会在这里显示。</div>`;
+      }
+      const page = pageSlice(items, "transitions", 8);
+      const stateName = new Map((Array.isArray(states) ? states : []).map(item => [item.stateKey, stateDisplayName(item)]));
+      return `
+        <div class="detail-block">
+          <h4>演化路径（${items.length}）</h4>
+          ${page.items.map(item => `
+            <div class="connection-card">
+              <strong>${escapeHtml(transitionEndpointLabel(item, "from", stateName))} -> ${escapeHtml(transitionEndpointLabel(item, "to", stateName))}</strong>
+              <span>类型：${escapeHtml(item.transitionType || "evolves_to")} · ${item.inferred ? "推断" : "显式"}</span>
+              <span>原因：${escapeHtml(item.reason || "-")}</span>
+              <span>置信度：${escapeHtml(item.confidence ?? "-")} · 批次：${escapeHtml(item.fusionBatchId || "-")}</span>
+            </div>
+          `).join("")}
+          ${renderPager("transitions", page)}
+        </div>
+      `;
+    }
+
+    function stateDisplayName(item) {
+      const order = item && item.stateOrder ? `阶段 ${item.stateOrder}` : "阶段";
+      const period = [item && item.validFrom || "", item && item.validTo || ""].filter(Boolean).join(" 至 ");
+      if (item && item.label) return item.label;
+      if (item && item.definition) {
+        const text = String(item.definition);
+        return text.length > 18 ? `${order}：${text.slice(0, 18)}...` : `${order}：${text}`;
+      }
+      return period ? `${order}（${period}）` : order;
+    }
+
+    function transitionEndpointLabel(item, side, stateName) {
+      if (side === "from") {
+        return item.sourceEntityName || stateName.get(item.fromStateKey) || cleanStateKey(item.fromStateKey) || "来源状态";
+      }
+      return stateName.get(item.toStateKey) || item.targetEntityName || cleanStateKey(item.toStateKey) || "目标状态";
+    }
+
+    function cleanStateKey(value) {
+      const text = String(value || "");
+      if (!text) return "";
+      const normalized = text.replace(/:state:.+$/, "");
+      const parts = normalized.split(":");
+      return parts.length > 1 ? parts.slice(1).join(":") : normalized;
+    }
+
+    function splitSvgLines(value, maxChars, maxLines) {
+      const text = String(value || "").replace(/\s+/g, " ").trim();
+      if (!text) return [""];
+      const lines = [];
+      for (let index = 0; index < text.length && lines.length < maxLines; index += maxChars) {
+        const chunk = text.slice(index, index + maxChars);
+        lines.push(index + maxChars < text.length && lines.length === maxLines - 1 ? `${chunk.slice(0, Math.max(0, maxChars - 3))}...` : chunk);
+      }
+      return lines.length ? lines : [""];
+    }
+
+    function svgTextLines(lines, x, y, className = "", anchor = "middle", lineHeight = 15) {
+      return lines.map((line, index) => `
+        <text class="${className}" x="${x}" y="${y + index * lineHeight}" text-anchor="${anchor}">${escapeHtml(line)}</text>
+      `).join("");
+    }
+
+    function renderEvolutionGraph(transitions, states) {
+      const items = Array.isArray(transitions) ? transitions : [];
+      if (!items.length) return "";
+      const stateByKey = new Map((Array.isArray(states) ? states : []).map(item => [item.stateKey, item]));
+      const width = 900;
+      const rowHeight = 126;
+      const topPad = 22;
+      const height = Math.max(160, topPad + items.length * rowHeight + 14);
+      const sourceX = 150;
+      const targetX = 720;
+      const arrowStart = 278;
+      const arrowEnd = 592;
+      const rowMarkup = items.map((item, index) => {
+        const y = topPad + index * rowHeight + 62;
+        const targetState = stateByKey.get(item.toStateKey) || {};
+        const sourceLabel = item.sourceEntityName || cleanStateKey(item.fromStateKey) || "变化来源";
+        const targetLabel = stateDisplayName(targetState);
+        const reason = item.reason || item.transitionType || "演化关系";
+        const inferredClass = item.inferred ? " inferred" : "";
+        const sourceLines = splitSvgLines(sourceLabel, 12, 2);
+        const targetLines = splitSvgLines(targetLabel, 14, 2);
+        const reasonLines = splitSvgLines(reason, 24, 2);
+        const evidenceLines = splitSvgLines(item.inferred ? "推断演化" : "显式演化", 10, 1);
+        return `
+          <rect class="evolution-lane" x="12" y="${y - 55}" width="${width - 24}" height="106" rx="10" />
+          <g class="evolution-node" transform="translate(${sourceX} ${y})">
+            <rect x="-112" y="-34" width="224" height="68" rx="9" />
+            <text x="0" y="-13" text-anchor="middle">变化点</text>
+            ${svgTextLines(sourceLines, 0, 8, "subtext")}
+            <title>${escapeHtml(sourceLabel)}</title>
+          </g>
+          <path class="evolution-path-line${inferredClass}" d="M ${arrowStart} ${y} C ${arrowStart + 80} ${y - 28}, ${arrowEnd - 80} ${y - 28}, ${arrowEnd} ${y}" marker-end="url(#evolutionArrow)" />
+          ${svgTextLines(evidenceLines, (arrowStart + arrowEnd) / 2, y - 37, "edge-label")}
+          ${svgTextLines(reasonLines, (arrowStart + arrowEnd) / 2, y + 20, "subtext")}
+          <g class="evolution-stage" transform="translate(${targetX} ${y})">
+            <rect x="-120" y="-38" width="240" height="76" rx="9" />
+            <text x="0" y="-15" text-anchor="middle">目标阶段</text>
+            ${svgTextLines(targetLines, 0, 7, "subtext")}
+            <title>${escapeHtml(targetLabel)}</title>
+          </g>
+        `;
+      }).join("");
+      return `
+        <div class="detail-block">
+          <div class="evolution-graph-card">
+            <h4>实体演化图（${items.length} 条）</h4>
+            <p class="evolution-caption">读法：左侧是变化点，中间箭头表示演化方向，右侧是该变化落到的实体阶段。</p>
+            <svg class="evolution-svg" viewBox="0 0 ${width} ${height}" role="img" aria-label="实体演化图" style="height:${height}px;">
+              <defs>
+                <marker id="evolutionArrow" markerWidth="10" markerHeight="10" refX="8" refY="3" orient="auto" markerUnits="strokeWidth">
+                  <path d="M0,0 L0,6 L9,3 z" fill="#f97316"></path>
+                </marker>
+              </defs>
+              ${rowMarkup}
+            </svg>
+          </div>
+        </div>
+      `;
+    }
+
+    function showStateNodeDetail(item) {
+      if (!item) return;
+      state.graph.selectedEntityId = item.id;
+      state.pages.states = 1;
+      state.pages.connections = 1;
+      state.pages.commonConnections = 1;
+      state.pages.transitions = 1;
+      renderEntityList();
+      el.graphDetailTitle.textContent = `状态 ${item.stateOrder || ""}`.trim() || "实体状态";
+      el.graphDetail.textContent = [
+        `类型：EntityState`,
+        `顺序：${item.stateOrder || "-"}`,
+        `时间：${item.validFrom || "-"} 至 ${item.validTo || "-"}`,
+        `定义：${item.definition || "-"}`,
+        `来源：${formatSources(item.sources, [])}`,
+        `状态ID：${item.id}`
+      ].join("\n");
+      const states = state.graph.selectedDetail && Array.isArray(state.graph.selectedDetail.states)
+        ? state.graph.selectedDetail.states.filter(stateItem => stateItem.stateKey === item.id)
+        : [];
+      if (states.length) {
+        renderStates(states);
+      }
+      const relatedEdges = state.graph.edges.filter(edge => edge.source === item.id || edge.target === item.id);
+      renderConnections(relatedEdges.map(edge => ({
+        direction: edge.source === item.id ? "out" : "in",
+        otherName: (state.graph.nodes.find(node => node.id === (edge.source === item.id ? edge.target : edge.source)) || {}).label,
+        relationType: edge.type,
+        statement: edge.label,
+        confidence: edge.confidence,
+        docIds: edge.docIds || []
+      })));
+      applyGraphFocus(item.id);
+    }
+
+    function renderSelectedDetailLists() {
+      const detail = state.graph.selectedDetail || {};
+      const states = Array.isArray(detail.states) ? detail.states : [];
+      const connections = Array.isArray(detail.connections) ? detail.connections : [];
+      const transitions = Array.isArray(detail.transitions) ? detail.transitions : [];
+      const attributes = Array.isArray(detail.attributes) ? detail.attributes : [];
+      renderStates(states);
+      el.stateList.insertAdjacentHTML("beforeend", renderEntityAttributes(attributes));
+      renderConnections(connections, states);
+      if (transitions.length) {
+        el.connectionList.insertAdjacentHTML("beforeend", `
+          <div class="detail-block">
+            <div class="evolution-graph-card">
+              <h4>图中演化路径</h4>
+              <p class="evolution-caption">图中把同一实体显示为多个阶段副本，橙红色箭头表示阶段演化。阶段变化内容和属性在右侧列表查看；未能明确分期的普通关系不强行挂到某个阶段。</p>
+            </div>
+          </div>
+        `);
+      }
+      el.connectionList.insertAdjacentHTML("beforeend", renderTransitions(transitions, states));
+    }
+
+    async function loadEntities(silent) {
+      if (!silent) {
+        el.entityList.innerHTML = `<div class="empty">实体清单加载中...</div>`;
+      }
+      try {
+        const search = el.entitySearch.value.trim();
+        const result = await request(`${API_BASE}/entities${buildQuery({ search, limit: 150 })}`);
+        state.entities = Array.isArray(result.items) ? result.items : [];
+        state.pages.entity = 1;
+        const multiState = state.entities.filter(item => numberValue(item.stateCount) > 1).length;
+        const withState = state.entities.filter(item => numberValue(item.stateCount) > 0).length;
+        el.entityHint.textContent = `当前清单 ${state.entities.length} 个实体，其中 ${withState} 个有 EntityState，${multiState} 个有多个状态。点击实体可查看状态与全部连接。`;
+        renderEntityList();
+      } catch (error) {
+        el.entityList.innerHTML = `<div class="empty">实体清单加载失败</div>`;
+        showNotice(`加载实体清单失败：${error.message || error}`, true);
+      }
+    }
+
+    function render() {
+      renderCounts();
+      renderRows();
+    }
+
+    function colorForType(type) {
+      const normalized = String(type || "").toLowerCase();
+      if (normalized.includes("entitystate")) return "#0f766e";
+      if (normalized.includes("org") || normalized.includes("机构")) return "#2563eb";
+      if (normalized.includes("person") || normalized.includes("人")) return "#047857";
+      if (normalized.includes("policy") || normalized.includes("制度")) return "#b45309";
+      if (normalized.includes("metric") || normalized.includes("指标")) return "#7c3aed";
+      if (normalized.includes("date") || normalized.includes("时间")) return "#db2777";
+      if (normalized.includes("concept") || normalized.includes("概念")) return "#0891b2";
+      return "#475569";
+    }
+
+    function hashText(text) {
+      let hash = 0;
+      for (let index = 0; index < String(text).length; index += 1) {
+        hash = ((hash << 5) - hash + String(text).charCodeAt(index)) | 0;
+      }
+      return Math.abs(hash);
+    }
+
+    function topGraphClusters(nodes, edges) {
+      const nodeIds = nodes.map(node => node.id);
+      const adjacency = new Map(nodeIds.map(id => [id, new Map()]));
+      edges.forEach(edge => {
+        if (!adjacency.has(edge.source) || !adjacency.has(edge.target)) return;
+        const weight = Math.max(1, numberValue(edge.factCount || 1));
+        adjacency.get(edge.source).set(edge.target, (adjacency.get(edge.source).get(edge.target) || 0) + weight);
+        adjacency.get(edge.target).set(edge.source, (adjacency.get(edge.target).get(edge.source) || 0) + weight);
+      });
+      const labels = new Map(nodeIds.map(id => [id, id]));
+      for (let round = 0; round < 8; round += 1) {
+        const ordered = [...nodes].sort((left, right) =>
+          numberValue(right.connectionCount || right.degree) - numberValue(left.connectionCount || left.degree)
+          || String(left.label || "").localeCompare(String(right.label || ""), "zh-Hans-CN")
+        );
+        ordered.forEach(node => {
+          const scores = new Map([[labels.get(node.id), 0.35]]);
+          adjacency.get(node.id).forEach((weight, neighborId) => {
+            const label = labels.get(neighborId);
+            scores.set(label, (scores.get(label) || 0) + weight);
+          });
+          const best = [...scores.entries()].sort((a, b) => b[1] - a[1] || String(a[0]).localeCompare(String(b[0])))[0];
+          if (best) labels.set(node.id, best[0]);
+        });
+      }
+      const groups = new Map();
+      nodes.forEach(node => {
+        const label = labels.get(node.id);
+        if (!groups.has(label)) {
+          groups.set(label, { id: label, nodes: [], score: 0 });
+        }
+        const group = groups.get(label);
+        group.nodes.push(node.id);
+        group.score += numberValue(node.connectionCount || node.degree);
+      });
+      return [...groups.values()].sort((left, right) => right.score - left.score || right.nodes.length - left.nodes.length);
+    }
+
+    function topGraphAnchors(groups, width, height) {
+      const anchors = new Map();
+      const centerX = width / 2;
+      const centerY = height / 2;
+      groups.forEach((group, index) => {
+        if (index === 0) {
+          anchors.set(group.id, { x: centerX, y: centerY });
+          return;
+        }
+        const ringIndex = index <= 6 ? 0 : 1;
+        const slot = ringIndex === 0 ? index - 1 : index - 7;
+        const slots = ringIndex === 0 ? Math.min(6, Math.max(1, groups.length - 1)) : Math.max(1, groups.length - 7);
+        const angle = -Math.PI / 2 + (Math.PI * 2 * slot) / slots;
+        const radiusX = width * (ringIndex === 0 ? 0.30 : 0.42);
+        const radiusY = height * (ringIndex === 0 ? 0.24 : 0.34);
+        anchors.set(group.id, {
+          x: centerX + Math.cos(angle) * radiusX,
+          y: centerY + Math.sin(angle) * radiusY
+        });
+      });
+      return anchors;
+    }
+
+    function graphPointFromEvent(event) {
+      const rect = el.graphSvg.getBoundingClientRect();
+      const viewBox = el.graphSvg.viewBox.baseVal;
+      return {
+        x: ((event.clientX - rect.left) / Math.max(1, rect.width)) * viewBox.width,
+        y: ((event.clientY - rect.top) / Math.max(1, rect.height)) * viewBox.height
+      };
+    }
+
+    function stopGraphAnimation() {
+      if (state.graph.animationId) {
+        window.cancelAnimationFrame(state.graph.animationId);
+        state.graph.animationId = null;
+      }
+    }
+
+    function prepareGraph(nodes, edges, width, height, scope) {
+      const previous = new Map(state.graph.nodes.map(node => [node.id, node]));
+      const degree = new Map(nodes.map(node => [node.id, 0]));
+      edges.forEach(edge => {
+        const weight = Math.max(1, numberValue(edge.factCount || 1));
+        degree.set(edge.source, (degree.get(edge.source) || 0) + weight);
+        degree.set(edge.target, (degree.get(edge.target) || 0) + weight);
+      });
+      if (scope === "top_connected") {
+        const groups = topGraphClusters(nodes, edges);
+        const anchors = topGraphAnchors(groups, width, height);
+        const groupByNode = new Map();
+        groups.forEach((group, groupIndex) => {
+          group.nodes.forEach((id, localIndex) => {
+            groupByNode.set(id, { group, groupIndex, localIndex });
+          });
+        });
+        return nodes.map((node, index) => {
+          const groupInfo = groupByNode.get(node.id) || { group: { id: node.id, nodes: [node.id] }, groupIndex: index, localIndex: 0 };
+          const anchor = anchors.get(groupInfo.group.id) || { x: width / 2, y: height / 2 };
+          const groupSize = groupInfo.group.nodes.length;
+          const localRadius = Math.min(125, 34 + Math.sqrt(groupSize) * 22);
+          const angle = (Math.PI * 2 * groupInfo.localIndex) / Math.max(1, groupSize) + ((hashText(node.id) % 17) / 100);
+          const connectionRank = Math.min(1, numberValue(node.connectionCount || degree.get(node.id)) / Math.max(1, numberValue(nodes[0]?.connectionCount || degree.get(nodes[0]?.id))));
+          const pullIn = 1 - connectionRank * 0.45;
+          return {
+            ...node,
+            x: anchor.x + Math.cos(angle) * localRadius * pullIn,
+            y: anchor.y + Math.sin(angle) * localRadius * 0.72 * pullIn,
+            vx: 0,
+            vy: 0,
+            degree: degree.get(node.id) || 0,
+            fixed: false,
+            clusterId: groupInfo.group.id,
+            clusterX: anchor.x,
+            clusterY: anchor.y,
+            layoutMode: "top_connected"
+          };
+        });
+      }
+      const hasStateNodes = nodes.some(node => node.isStateNode || String(node.type || "").toLowerCase() === "entitystate");
+      const stateNodes = nodes
+        .filter(node => node.isStateNode || String(node.type || "").toLowerCase() === "entitystate")
+        .sort((a, b) => numberValue(a.stateOrder) - numberValue(b.stateOrder));
+      const centerIds = new Set(edges
+        .filter(edge => edge.type === "HAS_STATE")
+        .map(edge => edge.source));
+      const stateX = new Map();
+      if (hasStateNodes) {
+        const gap = width / Math.max(2, stateNodes.length + 1);
+        stateNodes.forEach((node, index) => {
+          stateX.set(node.id, gap * (index + 1));
+        });
+      }
+      return nodes.map((node, index) => {
+        const old = previous.get(node.id);
+        if (old && !hasStateNodes) {
+          return {
+            ...node,
+            x: old.x,
+            y: old.y,
+            vx: old.vx || 0,
+            vy: old.vy || 0,
+            degree: degree.get(node.id) || 0,
+            fixed: old.fixed || false,
+            layoutMode: scope || "overview"
+          };
+        }
+        if (hasStateNodes && centerIds.has(node.id)) {
+          return {
+            ...node,
+            x: width / 2,
+            y: 95,
+            vx: 0,
+            vy: 0,
+            degree: degree.get(node.id) || 0,
+            fixed: true
+          };
+        }
+        if (hasStateNodes && stateX.has(node.id)) {
+          return {
+            ...node,
+            x: stateX.get(node.id),
+            y: 255,
+            vx: 0,
+            vy: 0,
+            degree: degree.get(node.id) || 0,
+            fixed: true
+          };
+        }
+        if (hasStateNodes) {
+          const seed = hashText(node.id);
+          const angle = (Math.PI * 2 * index) / Math.max(1, nodes.length) + ((seed % 25) / 200);
+          return {
+            ...node,
+            x: width / 2 + Math.cos(angle) * width * 0.36,
+            y: height * 0.70 + Math.sin(angle) * height * 0.18,
+            vx: 0,
+            vy: 0,
+            degree: degree.get(node.id) || 0,
+            fixed: false
+          };
+        }
+        const seed = hashText(node.id);
+        const angle = (Math.PI * 2 * index) / Math.max(1, nodes.length) + ((seed % 25) / 200);
+        const ring = index % 2 === 0 ? 0.39 : 0.29;
+        const radiusX = width * ring;
+        const radiusY = height * (ring * 0.72);
+        return {
+          ...node,
+          x: width / 2 + Math.cos(angle) * radiusX,
+          y: height / 2 + Math.sin(angle) * radiusY,
+          vx: 0,
+          vy: 0,
+          degree: degree.get(node.id) || 0,
+          fixed: false
+        };
+      });
+    }
+
+    function updateGraphDom() {
+      const nodes = state.graph.nodes;
+      const nodeById = new Map(nodes.map(node => [node.id, node]));
+      el.graphSvg.querySelectorAll("[data-edge-id]").forEach(edgeEl => {
+        const edge = state.graph.edges.find(item => item.id === edgeEl.getAttribute("data-edge-id"));
+        if (!edge) return;
+        const source = nodeById.get(edge.source);
+        const target = nodeById.get(edge.target);
+        if (!source || !target) return;
+        const line = edgeEl.querySelector("line");
+        const text = edgeEl.querySelector("text");
+        line.setAttribute("x1", source.x.toFixed(1));
+        line.setAttribute("y1", source.y.toFixed(1));
+        line.setAttribute("x2", target.x.toFixed(1));
+        line.setAttribute("y2", target.y.toFixed(1));
+        text.setAttribute("x", ((source.x + target.x) / 2).toFixed(1));
+        text.setAttribute("y", ((source.y + target.y) / 2).toFixed(1));
+      });
+      el.graphSvg.querySelectorAll("[data-node-id]").forEach(nodeEl => {
+        const node = nodeById.get(nodeEl.getAttribute("data-node-id"));
+        if (!node) return;
+        nodeEl.setAttribute("transform", `translate(${node.x.toFixed(1)} ${node.y.toFixed(1)})`);
+      });
+    }
+
+    function tickGraph(width, height) {
+      const nodes = state.graph.nodes;
+      const edges = state.graph.edges;
+      const nodeById = new Map(nodes.map(node => [node.id, node]));
+      const centerX = width / 2;
+      const centerY = height / 2;
+      const topConnectedMode = state.graph.mode === "top_connected";
+      for (let i = 0; i < nodes.length; i += 1) {
+        for (let j = i + 1; j < nodes.length; j += 1) {
+          const a = nodes[i];
+          const b = nodes[j];
+          let dx = a.x - b.x;
+          let dy = a.y - b.y;
+          let distanceSq = dx * dx + dy * dy;
+          if (distanceSq < 1) {
+            dx = 0.1;
+            dy = 0.1;
+            distanceSq = 1;
+          }
+          const sameCluster = topConnectedMode && a.clusterId && a.clusterId === b.clusterId;
+          const repelBase = sameCluster ? 8200 : (topConnectedMode ? 24500 : 12500);
+          const force = Math.min(topConnectedMode ? 14 : 9, repelBase / distanceSq);
+          const distance = Math.sqrt(distanceSq);
+          const fx = (dx / distance) * force;
+          const fy = (dy / distance) * force;
+          if (!a.fixed) {
+            a.vx += fx;
+            a.vy += fy;
+          }
+          if (!b.fixed) {
+            b.vx -= fx;
+            b.vy -= fy;
+          }
+        }
+      }
+      edges.forEach(edge => {
+        const source = nodeById.get(edge.source);
+        const target = nodeById.get(edge.target);
+        if (!source || !target) return;
+        const dx = target.x - source.x;
+        const dy = target.y - source.y;
+        const distance = Math.max(1, Math.sqrt(dx * dx + dy * dy));
+        const sameCluster = topConnectedMode && source.clusterId && source.clusterId === target.clusterId;
+        const desired = topConnectedMode
+          ? (sameCluster ? 92 : 150) + Math.min(44, Math.sqrt(source.degree + target.degree) * 9)
+          : 210 + Math.min(110, (source.degree + target.degree) * 4);
+        const force = (distance - desired) * (topConnectedMode ? 0.014 : 0.006);
+        const fx = (dx / distance) * force;
+        const fy = (dy / distance) * force;
+        if (!source.fixed) {
+          source.vx += fx;
+          source.vy += fy;
+        }
+        if (!target.fixed) {
+          target.vx -= fx;
+          target.vy -= fy;
+        }
+      });
+      nodes.forEach(node => {
+        if (!node.fixed) {
+          if (topConnectedMode && node.clusterX !== undefined && node.clusterY !== undefined) {
+            node.vx += (node.clusterX - node.x) * 0.010;
+            node.vy += (node.clusterY - node.y) * 0.010;
+            node.vx += (centerX - node.x) * 0.00035;
+            node.vy += (centerY - node.y) * 0.00035;
+          } else {
+            node.vx += (centerX - node.x) * 0.0015;
+            node.vy += (centerY - node.y) * 0.0015;
+          }
+          node.vx *= topConnectedMode ? 0.70 : 0.78;
+          node.vy *= topConnectedMode ? 0.70 : 0.78;
+          node.x += node.vx;
+          node.y += node.vy;
+          node.x = Math.max(64, Math.min(width - 64, node.x));
+          node.y = Math.max(64, Math.min(height - 64, node.y));
+        }
+      });
+      updateGraphDom();
+      state.graph.ticks += 1;
+      if (state.graph.ticks < 260 || state.graph.draggingId) {
+        state.graph.animationId = window.requestAnimationFrame(() => tickGraph(width, height));
+      } else {
+        state.graph.animationId = null;
+      }
+    }
+
+    function startGraphAnimation(width, height) {
+      stopGraphAnimation();
+      state.graph.ticks = 0;
+      state.graph.animationId = window.requestAnimationFrame(() => tickGraph(width, height));
+    }
+
+    function applyGraphFocus(id) {
+      state.graph.hoveredId = id;
+      const connected = new Set(id ? [id] : []);
+      state.graph.edges.forEach(edge => {
+        if (edge.source === id || edge.target === id || edge.id === id) {
+          connected.add(edge.source);
+          connected.add(edge.target);
+          connected.add(edge.id);
+        }
+      });
+      el.graphSvg.classList.toggle("is-focused", Boolean(id));
+      el.graphSvg.querySelectorAll(".graph-node").forEach(nodeEl => {
+        nodeEl.classList.toggle("is-active", connected.has(nodeEl.getAttribute("data-node-id")));
+      });
+      el.graphSvg.querySelectorAll(".graph-edge").forEach(edgeEl => {
+        edgeEl.classList.toggle("is-active", connected.has(edgeEl.getAttribute("data-edge-id")));
+      });
+    }
+
+    function mergeVisibleEdges(edges) {
+      const grouped = new Map();
+      edges.forEach(edge => {
+        const key = `${edge.source}||${edge.target}||${edge.type || "related_to"}`;
+        const reverseKey = `${edge.target}||${edge.source}||${edge.type || "related_to"}`;
+        const existingKey = grouped.has(key) ? key : (grouped.has(reverseKey) ? reverseKey : key);
+        const current = grouped.get(existingKey);
+        if (!current) {
+          grouped.set(existingKey, {
+            ...edge,
+            factCount: 1,
+            labels: edge.label ? [edge.label] : [],
+            docIds: Array.isArray(edge.docIds) ? [...edge.docIds] : []
+          });
+          return;
+        }
+        current.factCount += 1;
+        if (edge.label && current.labels.length < 5 && !current.labels.includes(edge.label)) {
+          current.labels.push(edge.label);
+        }
+        if (Array.isArray(edge.docIds)) {
+          edge.docIds.forEach(docId => {
+            if (docId && !current.docIds.includes(docId)) current.docIds.push(docId);
+          });
+        }
+        current.confidence = Math.max(Number(current.confidence || 0), Number(edge.confidence || 0));
+      });
+      return [...grouped.values()].map(edge => ({
+        ...edge,
+        label: edge.labels && edge.labels.length ? edge.labels[0] : edge.label,
+        docIds: (edge.docIds || []).slice(0, 5)
+      }));
+    }
+
+    function renderGraph(graph) {
+      stopGraphAnimation();
+      const rawNodes = Array.isArray(graph.nodes) ? graph.nodes : [];
+      const rawEdges = Array.isArray(graph.edges) ? graph.edges : [];
+      el.graphSvg.classList.toggle("top-connected", graph.scope === "top_connected");
+      const filter = el.graphFilter.value.trim().toLowerCase();
+      const visibleNodeIds = new Set(rawNodes
+        .filter(node => !filter || String(node.label || "").toLowerCase().includes(filter))
+        .map(node => node.id));
+      const visibleFacts = filter
+        ? rawEdges.filter(edge => visibleNodeIds.has(edge.source) || visibleNodeIds.has(edge.target))
+        : rawEdges;
+      visibleFacts.forEach(edge => {
+        visibleNodeIds.add(edge.source);
+        visibleNodeIds.add(edge.target);
+      });
+      const nodes = rawNodes.filter(node => visibleNodeIds.has(node.id));
+      const edges = mergeVisibleEdges(visibleFacts);
+      const width = Math.max(900, el.graphSvg.clientWidth || 900);
+      const height = 680;
+      const positioned = prepareGraph(nodes, edges, width, height, graph.scope);
+      state.graph.nodes = positioned;
+      state.graph.edges = edges;
+      const stats = graph.stats || {};
+      const scopeText = graph.scope === "entity"
+        ? `实体关系图：${graph.centerEntityLabel || "-"}`
+        : (graph.scope === "top_connected"
+          ? `高连接实体 Top ${numberValue(graph.targetEntities || nodes.length)} · 全局实体 ${numberValue(stats.entities)}`
+          : `全局实体 ${numberValue(stats.entities)} · 状态 ${numberValue(stats.states)} · 事实 ${numberValue(stats.facts)} · 融合簇 ${numberValue(stats.clusters)}`);
+      el.graphStats.textContent = `${scopeText} · 当前显示 ${nodes.length} 实体 / ${edges.length} 实体关系 / ${visibleFacts.length} 事实`;
+      const nodeById = new Map(positioned.map(node => [node.id, node]));
+      const edgeMarkup = edges.map(edge => {
+        const source = nodeById.get(edge.source);
+        const target = nodeById.get(edge.target);
+        if (!source || !target) return "";
+        const labelX = (source.x + target.x) / 2;
+        const labelY = (source.y + target.y) / 2;
+        const edgeClass = [
+          "graph-edge",
+          edge.isStateEdge ? "state-edge" : "",
+          edge.isEvolutionEdge ? "evolution-edge" : "",
+          edge.inferred ? "inferred" : ""
+        ].filter(Boolean).join(" ");
+        const marker = edge.isEvolutionEdge ? ` marker-end="url(#graphEvolutionArrow)"` : "";
+        const edgeLabel = edge.isEvolutionEdge
+          ? "演化"
+          : (edge.isStateEdge ? "状态" : (edge.factCount > 1 ? `${edge.type || ""} x${edge.factCount}` : edge.type || ""));
+        return `
+          <g class="${edgeClass}" data-edge-id="${escapeHtml(edge.id)}">
+            <line x1="${source.x}" y1="${source.y}" x2="${target.x}" y2="${target.y}"${marker} />
+            <text x="${labelX}" y="${labelY}" text-anchor="middle">${escapeHtml(edgeLabel)}</text>
+          </g>
+        `;
+      }).join("");
+      const nodeMarkup = positioned.map(node => {
+        const radius = Math.min(32, 13 + Math.sqrt(node.degree + 1) * 5);
+        const label = String(node.label || "未命名实体");
+        const shortLabel = label.length > 12 ? `${label.slice(0, 12)}...` : label;
+        const transitionCount = numberValue(node.transitionCount);
+        const stateCount = numberValue(node.stateCount);
+        if (node.isStateNode || String(node.type || "").toLowerCase() === "entitystate") {
+          const stateTitle = node.isPhaseCopy ? label : `状态 ${node.stateOrder || ""}`.trim();
+          const phaseLabel = node.isPhaseCopy
+            ? (node.stateName || node.period || "阶段")
+            : (label.length > 16 ? `${label.slice(0, 16)}...` : label);
+          const rectWidth = Math.max(156, Math.min(260, Math.max(stateTitle.length, phaseLabel.length) * 12 + 44));
+          return `
+            <g class="graph-node" data-node-id="${escapeHtml(node.id)}" transform="translate(${node.x.toFixed(1)} ${node.y.toFixed(1)})">
+              <rect x="${-rectWidth / 2}" y="-26" width="${rectWidth}" height="52" rx="8" fill="${colorForType(node.type)}" opacity="0.94" />
+              <text x="0" y="-5" text-anchor="middle">${escapeHtml(stateTitle || "实体")}</text>
+              <text x="0" y="15" text-anchor="middle">${escapeHtml(phaseLabel || "阶段")}</text>
+              ${node.changeSummary ? `<text x="0" y="44" text-anchor="middle">${escapeHtml(String(node.changeSummary).slice(0, 18))}</text>` : ""}
+            </g>
+          `;
+        }
+        return `
+          <g class="graph-node" data-node-id="${escapeHtml(node.id)}" transform="translate(${node.x.toFixed(1)} ${node.y.toFixed(1)})">
+            <title>${escapeHtml(label)}${stateCount > 0 ? `｜状态 ${stateCount}` : ""}${transitionCount > 0 ? `｜演化 ${transitionCount}` : ""}</title>
+            ${stateCount > 1 ? `<circle class="state-ring" cx="0" cy="0" r="${radius + 6}" />` : ""}
+            ${transitionCount > 0 ? `<circle class="evolution-ring" cx="0" cy="0" r="${radius + 12}" />` : ""}
+            <circle cx="0" cy="0" r="${radius}" fill="${colorForType(node.type)}" opacity="0.94" />
+            ${numberValue(node.connectionCount) > 0 ? `<text x="0" y="4" text-anchor="middle">${numberValue(node.connectionCount)}</text>` : ""}
+            ${transitionCount > 0 ? `
+              <g class="evolution-badge" transform="translate(${radius * 0.72} ${-radius * 0.72})">
+                <circle cx="0" cy="0" r="11" />
+                <text x="0" y="4" text-anchor="middle">演</text>
+              </g>
+            ` : ""}
+            <text x="0" y="${radius + 16}" text-anchor="middle">${escapeHtml(shortLabel)}</text>
+          </g>
+        `;
+      }).join("");
+      el.graphSvg.setAttribute("viewBox", `0 0 ${width} ${height}`);
+      const graphDefs = `
+        <defs>
+          <marker id="graphEvolutionArrow" markerWidth="12" markerHeight="12" refX="10" refY="4" orient="auto" markerUnits="strokeWidth">
+            <path d="M0,0 L0,8 L11,4 z" fill="#f97316"></path>
+          </marker>
+        </defs>
+      `;
+      el.graphSvg.innerHTML = edges.length || nodes.length
+        ? `${graphDefs}${edgeMarkup}${nodeMarkup}`
+        : `<text x="${width / 2}" y="${height / 2}" fill="#69758a" font-size="14" text-anchor="middle">暂无可展示图谱，请先完成图谱构建</text>`;
+      el.graphSvg.__visibleGraph = { nodes: positioned, edges };
+      if (edges.length || nodes.length) startGraphAnimation(width, height);
+      renderEntityList();
+    }
+
+    async function loadGraph(silent) {
+      el.loadGraphBtn.disabled = true;
+      el.loadGraphBtn.textContent = "加载中...";
+      if (!silent) showNotice("", false);
+      try {
+        const targetEntities = Math.max(10, Math.min(Number(el.graphLimit.value || 50), 120));
+        el.graphLimit.value = String(targetEntities);
+        const graph = await request(`${API_BASE}/view${buildQuery({ targetEntities })}`);
+        el.graphSvg.__rawGraph = graph;
+        state.graph.rawOverview = graph;
+        state.graph.mode = "overview";
+        state.graph.selectedEntityId = null;
+        el.backToOverviewBtn.style.display = "none";
+        renderGraph(graph);
+      } catch (error) {
+        el.graphStats.textContent = "图谱加载失败";
+        showNotice(`加载图谱失败：${error.message || error}`, true);
+      } finally {
+        el.loadGraphBtn.disabled = false;
+        el.loadGraphBtn.textContent = "查看图谱";
+      }
+    }
+
+    async function loadTopConnectedGraph() {
+      el.topConnectedBtn.disabled = true;
+      el.topConnectedBtn.textContent = "加载中...";
+      showNotice("", false);
+      try {
+        const targetEntities = Math.max(10, Math.min(Number(el.graphLimit.value || 60), 120));
+        el.graphLimit.value = String(Math.max(targetEntities, 60));
+        const graph = await request(`${API_BASE}/view/top-connected${buildQuery({ targetEntities: Math.max(targetEntities, 60) })}`);
+        el.graphSvg.__rawGraph = graph;
+        state.graph.mode = "top_connected";
+        state.graph.selectedEntityId = null;
+        state.entities = Array.isArray(graph.topEntities) ? graph.topEntities : [];
+        state.pages.entity = 1;
+        el.entityHint.textContent = `高连接实体 Top ${state.entities.length}：按实体关系数排序。点击实体可查看它的全部连接。`;
+        el.backToOverviewBtn.style.display = "";
+        renderGraph(graph);
+      } catch (error) {
+        el.graphStats.textContent = "高连接实体加载失败";
+        showNotice(`加载高连接实体失败：${error.message || error}`, true);
+      } finally {
+        el.topConnectedBtn.disabled = false;
+        el.topConnectedBtn.textContent = "高连接实体 Top 60";
+      }
+    }
+
+    async function loadJobs(silent) {
+      if (state.loading) return;
+      setBusy(true);
+      if (!silent) showNotice("", false);
+      try {
+        const limit = Math.max(1, Math.min(Number(el.limit.value || 100), 200));
+        el.limit.value = String(limit);
+        const jobs = await request(`${API_BASE}/build-jobs${buildQuery({ status: el.status.value, limit })}`);
+        state.jobs = Array.isArray(jobs) ? jobs : [];
+        el.lastLoaded.textContent = `最后刷新：${new Date().toLocaleString()}`;
+        render();
+      } catch (error) {
+        showNotice(`加载图谱任务失败：${error.message || error}`, true);
+      } finally {
+        setBusy(false);
+      }
+    }
+
+    async function loadTemplates(silent) {
+      if (!silent) showNotice("", false);
+      try {
+        const templates = await request(`${API_BASE}/entity-type-templates`);
+        state.templates = Array.isArray(templates) ? templates : [];
+        el.templateEditor.value = JSON.stringify(state.templates, null, 2);
+      } catch (error) {
+        showNotice(`读取实体类型模板失败：${error.message || error}`, true);
+      }
+    }
+
+    async function saveTemplates() {
+      showNotice("", false);
+      try {
+        const parsed = JSON.parse(el.templateEditor.value || "[]");
+        if (!Array.isArray(parsed)) {
+          throw new Error("模板 JSON 必须是数组。");
+        }
+        const result = await request(`${API_BASE}/entity-type-templates`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify(parsed)
+        });
+        state.templates = Array.isArray(result.templates) ? result.templates : [];
+        el.templateEditor.value = JSON.stringify(state.templates, null, 2);
+        showNotice(`实体类型模板已保存：${result.saved ?? 0} 个。`, false);
+      } catch (error) {
+        showNotice(`保存实体类型模板失败：${error.message || error}`, true);
+      }
+    }
+
+    async function backfillMissing() {
+      if (state.loading) return;
+      setBusy(true);
+      showNotice("", false);
+      try {
+        const limit = Math.max(1, Math.min(Number(el.limit.value || 200), 5000));
+        const dataSourceId = el.dataSourceId.value.trim();
+        const result = await request(`${API_BASE}/build-jobs/backfill-missing${buildQuery({ limit, dataSourceId })}`, { method: "POST" });
+        showNotice(`补建任务已提交：匹配 ${result.matched ?? 0} 个，入队 ${result.queued ?? 0} 个。`, false);
+        await loadJobs(true);
+      } catch (error) {
+        showNotice(`提交补建失败：${error.message || error}`, true);
+      } finally {
+        setBusy(false);
+      }
+    }
+
+    async function submitBatchBuild(rebuildSuccess) {
+      if (state.loading) return;
+      setBusy(true);
+      showNotice("", false);
+      try {
+        const limit = Math.max(1, Math.min(Number(el.limit.value || 200), 5000));
+        const dataSourceId = el.dataSourceId.value.trim();
+        const result = await request(`${API_BASE}/build-jobs/batch${buildQuery({ limit, dataSourceId, rebuildSuccess })}`, { method: "POST" });
+        showNotice(`批量图谱抽取已提交：批次 ${result.graphBatchId || "-"}，匹配 ${result.matched ?? 0} 个，入队 ${result.queued ?? 0} 个。`, false);
+        await loadJobs(true);
+      } catch (error) {
+        showNotice(`批量提交失败：${error.message || error}`, true);
+      } finally {
+        setBusy(false);
+      }
+    }
+
+    async function loadEntityDetail(entityId) {
+      if (!entityId) return;
+      state.graph.selectedEntityId = entityId;
+      state.pages.states = 1;
+      state.pages.connections = 1;
+      state.pages.commonConnections = 1;
+      state.pages.transitions = 1;
+      renderEntityList();
+      el.graphDetailTitle.textContent = "实体详情加载中...";
+      el.graphDetail.textContent = "正在读取 EntityState 与全部连接。";
+      el.enrichEntityBtn.style.display = "none";
+      el.stateList.innerHTML = "";
+      el.connectionList.innerHTML = "";
+      try {
+        const result = await request(`${API_BASE}/entities/${encodeURIComponent(entityId)}${buildQuery({ connectionLimit: 500 })}`);
+        state.graph.selectedDetail = result;
+        const entity = result.entity || {};
+        const states = Array.isArray(result.states) ? result.states : [];
+        const connections = Array.isArray(result.connections) ? result.connections : [];
+        const transitions = Array.isArray(result.transitions) ? result.transitions : [];
+        const stateConnectionCount = states.reduce((sum, item) => sum + numberValue((item.connections || []).length), 0);
+        el.graphDetailTitle.textContent = entity.label || "实体";
+        el.enrichEntityBtn.style.display = "";
+        el.graphDetail.textContent = [
+          `类型：${entity.type || "-"}`,
+          `规范名：${entity.clusterName || entity.label || "-"}`,
+          `实体ID：${entity.id || entityId}`,
+          `融合键：${entity.fusionKey || "-"}`,
+          `融合状态：${entity.fusionStatus || "-"}`,
+          `EntityState：${states.length}`,
+          `状态级关系：${stateConnectionCount}`,
+          `演化路径：${transitions.length}`,
+          `全部连接：${connections.length}`
+        ].join("\n");
+        renderSelectedDetailLists();
+        const relationGraph = buildEntityRelationGraph(entity, connections, states, transitions);
+        el.graphSvg.__rawGraph = relationGraph;
+        state.graph.mode = "entity";
+        el.backToOverviewBtn.style.display = "";
+        renderGraph(relationGraph);
+        const visibleNode = state.graph.nodes.find(node => node.id === (entity.id || entityId));
+        if (visibleNode) applyGraphFocus(visibleNode.id);
+      } catch (error) {
+        el.graphDetailTitle.textContent = "实体详情加载失败";
+        el.enrichEntityBtn.style.display = "none";
+        el.graphDetail.textContent = error.message || String(error);
+        showNotice(`加载实体详情失败：${error.message || error}`, true);
+      }
+    }
+
+    async function enrichSelectedEntity() {
+      const entityId = state.graph.selectedEntityId;
+      if (!entityId) {
+        showNotice("请先选择一个实体。", true);
+        return;
+      }
+      el.enrichEntityBtn.disabled = true;
+      el.enrichEntityBtn.textContent = "提交中...";
+      try {
+        const result = await request(`${API_BASE}/entities/${encodeURIComponent(entityId)}/enrich${buildQuery({ limit: 100 })}`, { method: "POST" });
+        showNotice(`实体深化任务已提交：图谱已知 ${result.graphKnownMatched ?? 0} 篇，索引召回 ${result.indexRecalled ?? 0} 篇，入队 ${result.queued ?? 0} 个任务。`, false);
+        await loadJobs(true);
+      } catch (error) {
+        showNotice(`提交实体深化失败：${error.message || error}`, true);
+      } finally {
+        el.enrichEntityBtn.disabled = false;
+        el.enrichEntityBtn.textContent = "深化该实体";
+      }
+    }
+
+    async function startFusion() {
+      if (state.loading) return;
+      setBusy(true);
+      showNotice("", false);
+      try {
+        const result = await request(`${API_BASE}/fusion-jobs/start`, { method: "POST" });
+        const changed = Number(result.entityFusionBackfilled ?? 0) + Number(result.entityFusionGroups ?? 0) + Number(result.entityFusionSameAsEdges ?? 0)
+          + Number(result.stateFusionGroups ?? 0) + Number(result.transitionEdges ?? 0);
+        const message = changed > 0
+          ? `融合完成：实体簇 ${result.entityFusionGroups ?? 0} 个，状态簇 ${result.stateFusionGroups ?? 0} 个，演化边 ${result.transitionEdges ?? 0} 条，同义边 ${result.entityFusionSameAsEdges ?? 0} 条。`
+          : "实体融合已执行：当前没有新的待融合实体。新增或重建图谱后再执行会处理新批次。";
+        showNotice(message, false);
+        await Promise.all([loadJobs(true), loadGraph(true)]);
+        showNotice(message, false);
+      } catch (error) {
+        showNotice(`实体融合失败：${error.message || error}`, true);
+      } finally {
+        setBusy(false);
+      }
+    }
+
+    async function startStateFusion() {
+      if (state.loading) return;
+      setBusy(true);
+      showNotice("", false);
+      try {
+        const result = await request(`${API_BASE}/fusion-jobs/state/start`, { method: "POST" });
+        showNotice(`状态融合完成：状态簇 ${result.stateFusionGroups ?? 0} 个，候选 ${result.stateFusionCandidates ?? 0} 个。`, false);
+        await Promise.all([loadJobs(true), loadGraph(true)]);
+      } catch (error) {
+        showNotice(`状态融合失败：${error.message || error}`, true);
+      } finally {
+        setBusy(false);
+      }
+    }
+
+    async function startTransitionBuild() {
+      if (state.loading) return;
+      setBusy(true);
+      showNotice("", false);
+      try {
+        const result = await request(`${API_BASE}/fusion-jobs/transitions/start`, { method: "POST" });
+        showNotice(`演化链构建完成：显式 ${result.explicitTransitionEdges ?? 0} 条，推断 ${result.inferredTransitionEdges ?? 0} 条。`, false);
+        await Promise.all([loadJobs(true), loadGraph(true)]);
+      } catch (error) {
+        showNotice(`演化链构建失败：${error.message || error}`, true);
+      } finally {
+        setBusy(false);
+      }
+    }
+
+    async function retryJob(jobId) {
+      if (!jobId || state.rowActions.has(jobId)) return;
+      state.rowActions.add(jobId);
+      renderRows();
+      showNotice("", false);
+      try {
+        const result = await request(`${API_BASE}/build-jobs/${encodeURIComponent(jobId)}/retry`, { method: "POST" });
+        showNotice(result.queued ? `任务已重新进入运行队列，批次 ${result.graphBatchId || "-"}。` : (result.message || "任务未重新入队。"), !result.queued);
+        await loadJobs(true);
+      } catch (error) {
+        showNotice(`重新开始失败：${error.message || error}`, true);
+      } finally {
+        state.rowActions.delete(jobId);
+        renderRows();
+      }
+    }
+
+    el.refreshBtn.addEventListener("click", () => loadJobs(false));
+    el.backfillBtn.addEventListener("click", backfillMissing);
+    el.batchBuildBtn.addEventListener("click", () => submitBatchBuild(false));
+    el.batchRebuildBtn.addEventListener("click", () => submitBatchBuild(true));
+    el.fusionBtn.addEventListener("click", startFusion);
+    el.stateFusionBtn.addEventListener("click", startStateFusion);
+    el.transitionBtn.addEventListener("click", startTransitionBuild);
+    el.loadTemplatesBtn.addEventListener("click", () => loadTemplates(false));
+    el.saveTemplatesBtn.addEventListener("click", saveTemplates);
+    el.loadGraphBtn.addEventListener("click", loadGraph);
+    el.topConnectedBtn.addEventListener("click", loadTopConnectedGraph);
+    el.enrichEntityBtn.addEventListener("click", enrichSelectedEntity);
+    el.backToOverviewBtn.addEventListener("click", () => {
+      if (state.graph.mode === "top_connected") {
+        loadGraph(true);
+        return;
+      }
+      if (!state.graph.rawOverview) return;
+      state.graph.mode = "overview";
+      state.graph.selectedDetail = null;
+      state.graph.selectedEntityId = null;
+      el.backToOverviewBtn.style.display = "none";
+      el.graphSvg.__rawGraph = state.graph.rawOverview;
+      renderGraph(state.graph.rawOverview);
+      el.graphDetailTitle.textContent = "未选择节点";
+      el.enrichEntityBtn.style.display = "none";
+      el.graphDetail.textContent = "点击图中的实体或实体清单，查看状态、来源与全部连接。";
+      el.stateList.innerHTML = "";
+      el.connectionList.innerHTML = "";
+    });
+    el.entitySearchBtn.addEventListener("click", () => loadEntities(false));
+    el.entitySearch.addEventListener("keydown", event => {
+      if (event.key === "Enter") loadEntities(false);
+    });
+    el.graphFilter.addEventListener("input", () => {
+      const graphData = el.graphSvg.__rawGraph;
+      if (graphData) renderGraph(graphData);
+    });
+    el.graphSvg.addEventListener("pointerdown", event => {
+      const nodeEl = event.target.closest("[data-node-id]");
+      if (!nodeEl) return;
+      const nodeId = nodeEl.getAttribute("data-node-id");
+      const item = state.graph.nodes.find(node => node.id === nodeId);
+      if (!item) return;
+      const point = graphPointFromEvent(event);
+      state.graph.draggingId = nodeId;
+      item.fixed = true;
+      item.x = point.x;
+      item.y = point.y;
+      item.vx = 0;
+      item.vy = 0;
+      nodeEl.setPointerCapture?.(event.pointerId);
+      applyGraphFocus(nodeId);
+      updateGraphDom();
+      if (!state.graph.animationId) {
+        const viewBox = el.graphSvg.viewBox.baseVal;
+        startGraphAnimation(viewBox.width || 900, viewBox.height || 680);
+      }
+    });
+    el.graphSvg.addEventListener("pointermove", event => {
+      if (!state.graph.draggingId) return;
+      const item = state.graph.nodes.find(node => node.id === state.graph.draggingId);
+      if (!item) return;
+      const viewBox = el.graphSvg.viewBox.baseVal;
+      const point = graphPointFromEvent(event);
+      item.x = Math.max(42, Math.min((viewBox.width || 900) - 42, point.x));
+      item.y = Math.max(42, Math.min((viewBox.height || 680) - 42, point.y));
+      item.vx = 0;
+      item.vy = 0;
+      updateGraphDom();
+    });
+    el.graphSvg.addEventListener("pointerup", event => {
+      if (!state.graph.draggingId) return;
+      const item = state.graph.nodes.find(node => node.id === state.graph.draggingId);
+      if (item) item.fixed = false;
+      state.graph.draggingId = null;
+      event.target.releasePointerCapture?.(event.pointerId);
+    });
+    el.graphSvg.addEventListener("pointerleave", () => {
+      if (state.graph.draggingId) return;
+      applyGraphFocus(null);
+    });
+    el.graphSvg.addEventListener("pointerover", event => {
+      const node = event.target.closest("[data-node-id]");
+      const edge = event.target.closest("[data-edge-id]");
+      if (node) applyGraphFocus(node.getAttribute("data-node-id"));
+      else if (edge) applyGraphFocus(edge.getAttribute("data-edge-id"));
+    });
+    el.graphSvg.addEventListener("pointerout", event => {
+      if (state.graph.draggingId) return;
+      if (!el.graphSvg.contains(event.relatedTarget)) applyGraphFocus(null);
+    });
+    el.status.addEventListener("change", () => loadJobs(false));
+    el.limit.addEventListener("change", () => loadJobs(false));
+    el.autoRefresh.addEventListener("change", () => {
+      if (state.autoTimer) {
+        window.clearInterval(state.autoTimer);
+        state.autoTimer = null;
+      }
+      if (el.autoRefresh.checked) {
+        state.autoTimer = window.setInterval(() => loadJobs(true), 5000);
+      }
+    });
+    document.body.addEventListener("click", event => {
+      const pagerButton = event.target.closest("button[data-page-scope]");
+      if (pagerButton) {
+        const scope = pagerButton.getAttribute("data-page-scope");
+        const page = Number(pagerButton.getAttribute("data-page"));
+        if (scope && Number.isFinite(page)) {
+          state.pages[scope] = page;
+          if (scope === "entity") {
+            renderEntityList();
+          } else {
+            renderSelectedDetailLists();
+          }
+        }
+        return;
+      }
+      const button = event.target.closest("button[data-job-id]");
+      if (button) retryJob(button.getAttribute("data-job-id"));
+      const entityRow = event.target.closest("[data-entity-id]");
+      if (entityRow) {
+        loadEntityDetail(entityRow.getAttribute("data-entity-id"));
+        return;
+      }
+      const node = event.target.closest("[data-node-id]");
+      if (node && el.graphSvg.__visibleGraph) {
+        const item = el.graphSvg.__visibleGraph.nodes.find(entry => entry.id === node.getAttribute("data-node-id"));
+        if (item) {
+          if (item.isStateNode || String(item.type || "").toLowerCase() === "entitystate") {
+            showStateNodeDetail(item);
+          } else {
+            loadEntityDetail(item.id);
+          }
+        }
+      }
+      const edge = event.target.closest("[data-edge-id]");
+      if (edge && el.graphSvg.__visibleGraph) {
+        const item = el.graphSvg.__visibleGraph.edges.find(entry => entry.id === edge.getAttribute("data-edge-id"));
+        if (item) {
+          el.graphDetailTitle.textContent = item.type || "关系";
+          el.graphDetail.textContent = `关系：${item.type || "-"}\n事实数量：${item.factCount || 1}\n代表事实：${item.label || "-"}\n置信度：${item.confidence ?? "-"}\n证据文档：${(item.docIds || []).join("\\n") || "-"}`;
+        }
+      }
+    });
+
+    state.autoTimer = window.setInterval(() => loadJobs(true), 5000);
+    loadJobs(false);
+    loadGraph();
+    loadEntities(true);
+    loadTemplates(true);
+  </script>
+</body>
+</html>

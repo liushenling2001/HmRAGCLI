@@ -13,8 +13,10 @@ import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
 import java.time.OffsetDateTime;
+import java.util.ArrayList;
 import java.util.HashSet;
 import java.util.HashMap;
+import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
@@ -27,30 +29,38 @@ public class DomainRefineJobService {
     private final DomainDefinitionRepository domainDefinitionRepository;
     private final TopicDefinitionRepository topicDefinitionRepository;
     private final DomainMemoryPackRepository domainMemoryPackRepository;
+    private final KnowledgeGraphBuildService knowledgeGraphBuildService;
 
     public DomainRefineJobService(
             DomainRefineJobRepository domainRefineJobRepository,
             DomainDefinitionRepository domainDefinitionRepository,
             TopicDefinitionRepository topicDefinitionRepository,
-            DomainMemoryPackRepository domainMemoryPackRepository
+            DomainMemoryPackRepository domainMemoryPackRepository,
+            KnowledgeGraphBuildService knowledgeGraphBuildService
     ) {
         this.domainRefineJobRepository = domainRefineJobRepository;
         this.domainDefinitionRepository = domainDefinitionRepository;
         this.topicDefinitionRepository = topicDefinitionRepository;
         this.domainMemoryPackRepository = domainMemoryPackRepository;
+        this.knowledgeGraphBuildService = knowledgeGraphBuildService;
     }
 
     @Transactional
     public ApiDtos.DomainRefineJobItem startDomainRefine(UUID domainId, ApiDtos.StartDomainRefineRequest request) {
         DomainDefinition domain = requireDomain(domainId);
         DomainRefineJob job = new DomainRefineJob();
+        Map<String, Object> scope = buildDomainScope(domain, request == null ? null : request.scopeSnapshot());
+        Map<String, Object> inputSummary = copyMap(request == null ? null : request.inputSummary());
+        Map<String, Object> graphOptimization = prepareGraphOptimization(domain, null, inputSummary);
         job.setJobType(defaultValue(request == null ? null : request.jobType(), "domain_refine"));
         job.setDomainId(domain.getId());
-        job.setStatus("queued");
+        job.setStatus(shouldWaitForGraphOptimization(graphOptimization) ? "waiting_graph_optimization" : "queued");
         job.setTriggerSource(defaultValue(request == null ? null : request.triggerSource(), "user"));
         job.setModelProfile(trimToNull(request == null ? null : request.modelProfile()));
-        job.setScopeSnapshotJson(buildDomainScope(domain, request == null ? null : request.scopeSnapshot()));
-        job.setInputSummaryJson(copyMap(request == null ? null : request.inputSummary()));
+        scope.put("graphOptimization", graphOptimization);
+        inputSummary.put("graphOptimization", graphOptimization);
+        job.setScopeSnapshotJson(scope);
+        job.setInputSummaryJson(inputSummary);
         job.setOutputSummaryJson(new HashMap<>());
         DomainRefineJob saved = domainRefineJobRepository.save(job);
         return toItem(saved, false);
@@ -59,15 +69,21 @@ public class DomainRefineJobService {
     @Transactional
     public ApiDtos.DomainRefineJobItem startTopicRefine(UUID topicId, ApiDtos.StartTopicRefineRequest request) {
         TopicDefinition topic = requireTopic(topicId);
+        DomainDefinition domain = requireDomain(topic.getDomainId());
         DomainRefineJob job = new DomainRefineJob();
+        Map<String, Object> scope = buildTopicScope(topic, request == null ? null : request.scopeSnapshot());
+        Map<String, Object> inputSummary = copyMap(request == null ? null : request.inputSummary());
+        Map<String, Object> graphOptimization = prepareGraphOptimization(domain, topic, inputSummary);
         job.setJobType(defaultValue(request == null ? null : request.jobType(), "topic_refine"));
         job.setDomainId(topic.getDomainId());
         job.setTopicId(topic.getId());
-        job.setStatus("queued");
+        job.setStatus(shouldWaitForGraphOptimization(graphOptimization) ? "waiting_graph_optimization" : "queued");
         job.setTriggerSource(defaultValue(request == null ? null : request.triggerSource(), "user"));
         job.setModelProfile(trimToNull(request == null ? null : request.modelProfile()));
-        job.setScopeSnapshotJson(buildTopicScope(topic, request == null ? null : request.scopeSnapshot()));
-        job.setInputSummaryJson(copyMap(request == null ? null : request.inputSummary()));
+        scope.put("graphOptimization", graphOptimization);
+        inputSummary.put("graphOptimization", graphOptimization);
+        job.setScopeSnapshotJson(scope);
+        job.setInputSummaryJson(inputSummary);
         job.setOutputSummaryJson(new HashMap<>());
         DomainRefineJob saved = domainRefineJobRepository.save(job);
         return toItem(saved, false);
@@ -170,6 +186,69 @@ public class DomainRefineJobService {
         return scope;
     }
 
+    private Map<String, Object> prepareGraphOptimization(DomainDefinition domain, TopicDefinition topic, Map<String, Object> inputSummary) {
+        List<String> scopeKeys = graphOptimizationScopeKeys(domain, topic);
+        String scopeKey = String.join("；", scopeKeys);
+        int limit = graphOptimizationLimit(inputSummary);
+        try {
+            Map<String, Object> result = knowledgeGraphBuildService.enqueueQueryEnrichmentScopes(
+                    scopeKeys,
+                    limit,
+                    topic == null ? "knowledge_pack_domain_enrichment" : "knowledge_pack_topic_enrichment"
+            );
+            Map<String, Object> optimization = new HashMap<>(result);
+            optimization.put("enabled", true);
+            optimization.put("status", shouldWaitForGraphOptimization(optimization) ? "waiting" : "skipped");
+            optimization.put("scopeType", "query");
+            optimization.put("scopeKey", scopeKey);
+            optimization.put("scopeKeys", scopeKeys);
+            optimization.put("reason", topic == null ? "domain_memory_pack_prebuild" : "topic_memory_pack_prebuild");
+            return optimization;
+        } catch (Exception ex) {
+            Map<String, Object> optimization = new HashMap<>();
+            optimization.put("enabled", false);
+            optimization.put("status", "failed_to_enqueue");
+            optimization.put("scopeType", "query");
+            optimization.put("scopeKey", scopeKey);
+            optimization.put("scopeKeys", scopeKeys);
+            optimization.put("error", ex.getMessage() == null ? ex.getClass().getSimpleName() : ex.getMessage());
+            return optimization;
+        }
+    }
+
+    private boolean shouldWaitForGraphOptimization(Map<String, Object> graphOptimization) {
+        return intValue(graphOptimization.get("queued"), 0) > 0;
+    }
+
+    private List<String> graphOptimizationScopeKeys(DomainDefinition domain, TopicDefinition topic) {
+        LinkedHashSet<String> parts = new LinkedHashSet<>();
+        if (domain != null) {
+            addGraphOptimizationScope(parts, domain.getName());
+            if (domain.getSeedQueriesJson() != null) {
+                domain.getSeedQueriesJson().forEach(value -> addGraphOptimizationScope(parts, value));
+            }
+        }
+        if (topic != null) {
+            addGraphOptimizationScope(parts, topic.getName());
+            if (topic.getSeedQueriesJson() != null) {
+                topic.getSeedQueriesJson().forEach(value -> addGraphOptimizationScope(parts, value));
+            }
+        }
+        return new ArrayList<>(parts).stream().limit(12).toList();
+    }
+
+    private void addGraphOptimizationScope(LinkedHashSet<String> scopes, String value) {
+        String normalized = trimToNull(value);
+        if (normalized != null) {
+            scopes.add(normalized.length() > 120 ? normalized.substring(0, 120) : normalized);
+        }
+    }
+
+    private int graphOptimizationLimit(Map<String, Object> inputSummary) {
+        Object raw = inputSummary == null ? null : inputSummary.get("graphOptimizationLimit");
+        return Math.max(1, Math.min(intValue(raw, 100), 500));
+    }
+
     private ApiDtos.DomainRefineJobItem toItem(DomainRefineJob job, boolean hasMemoryPack) {
         String status = job.getStatus();
         String errorMessage = job.getErrorMessage();
@@ -232,5 +311,16 @@ public class DomainRefineJobService {
     private String defaultValue(String value, String defaultValue) {
         String trimmed = trimToNull(value);
         return trimmed == null ? defaultValue : trimmed;
+    }
+
+    private int intValue(Object value, int fallback) {
+        if (value instanceof Number number) {
+            return number.intValue();
+        }
+        try {
+            return value == null ? fallback : Integer.parseInt(String.valueOf(value));
+        } catch (NumberFormatException ex) {
+            return fallback;
+        }
     }
 }

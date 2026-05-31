@@ -670,6 +670,7 @@ public class DomainKnowledgeRefinementService {
         body.put("model", config.model());
         body.put("temperature", 0.2);
         body.put("max_tokens", synthesisMaxCompletionTokens());
+        body.put("max_completion_tokens", synthesisMaxCompletionTokens());
         body.put("messages", List.of(
                 Map.of("role", "system", "content", "你是知识库精炼器，只能返回一个 JSON 对象，不要返回 Markdown 代码块。"),
                 Map.of("role", "user", "content", prompt)
@@ -688,6 +689,7 @@ public class DomainKnowledgeRefinementService {
         body.put("model", config.model());
         body.put("temperature", 0.1);
         body.put("max_tokens", groupMaxCompletionTokens());
+        body.put("max_completion_tokens", groupMaxCompletionTokens());
         body.put("messages", List.of(
                 Map.of("role", "system", "content", "你是领域证据组精炼器，只能返回一个 JSON 对象，不要返回 Markdown 代码块。"),
                 Map.of("role", "user", "content", prompt)
@@ -706,6 +708,7 @@ public class DomainKnowledgeRefinementService {
         body.put("model", config.model());
         body.put("temperature", 0.1);
         body.put("max_tokens", termPlanMaxCompletionTokens());
+        body.put("max_completion_tokens", termPlanMaxCompletionTokens());
         body.put("messages", List.of(
                 Map.of("role", "system", "content", "你是检索词规划器，只能返回一个 JSON 对象，不要返回 Markdown 代码块。"),
                 Map.of("role", "user", "content", prompt)

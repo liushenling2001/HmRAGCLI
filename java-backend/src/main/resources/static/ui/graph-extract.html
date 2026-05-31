@@ -1,0 +1,171 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Graph Extract Jobs</title>
+  <link rel="icon" href="/favicon.ico" />
+  <link rel="stylesheet" href="/ui/assets/graph-pipeline.css" />
+</head>
+<body>
+  <main class="shell">
+    <header class="topbar">
+      <div class="brand"><div class="eyebrow">Stage 1</div><h1>抽取任务</h1></div>
+      <nav class="nav"><a href="/ui/graph-pipeline.html">流程总览</a><a href="/ui/graph.html">旧图谱页</a></nav>
+    </header>
+    <div id="stageNav"></div>
+    <section class="panel">
+      <div class="section-head">
+        <h2>动作</h2>
+        <span>只负责骨架图谱抽取：补建、批量构建、重建成功任务。局部深化请从实体详情或知识包构建入口触发。</span>
+      </div>
+      <div class="runtime-switch">
+        <label class="switch-row">
+          <input id="autoBuildAfterIndex" type="checkbox" />
+          <span class="switch-ui"></span>
+          <span><strong>入库完成后自动骨架构建</strong><small>关闭后，文件索引完成只入库，不自动创建图谱任务；需要时在本页手动批量启动。</small></span>
+        </label>
+        <span id="autoBuildStatus" class="badge">读取中</span>
+      </div>
+      <div class="filters">
+        <label>状态<select id="status"><option value="">全部</option><option value="queued">queued</option><option value="running">running</option><option value="success">success</option><option value="failed">failed</option></select></label>
+        <label>数量<input id="limit" type="number" min="1" max="500" value="100" /></label>
+        <label>数据源 ID<input id="dataSourceId" type="text" placeholder="可选" /></label>
+        <div class="actions">
+          <button id="refreshBtn" class="primary">刷新</button>
+          <button id="backfillBtn">补建缺失</button>
+          <button id="batchBuildBtn">开始骨架构建</button>
+          <button id="batchRebuildBtn">重建成功任务</button>
+        </div>
+      </div>
+    </section>
+    <div id="notice" class="notice"></div>
+    <section class="metrics" id="metrics"></section>
+    <section class="grid">
+      <div class="panel"><div class="section-head"><h2>运行中</h2><span id="runningCount">0</span></div><div id="runningRows" class="list"></div></div>
+      <div class="panel"><div class="section-head"><h2>失败</h2><span id="failedCount">0</span></div><div id="failedRows" class="list"></div></div>
+      <div class="panel"><div class="section-head"><h2>成功</h2><span id="successCount">0</span></div><div id="successRows" class="list"></div></div>
+    </section>
+  </main>
+  <script type="module">
+    import { API_BASE, buildQuery, escapeHtml, metric, request, showNotice, stageNav, statusBadge, summaryValue } from "/ui/assets/graph-pipeline.js";
+    const el = {
+      stageNav: document.getElementById("stageNav"), notice: document.getElementById("notice"), metrics: document.getElementById("metrics"),
+      status: document.getElementById("status"), limit: document.getElementById("limit"), dataSourceId: document.getElementById("dataSourceId"),
+      autoBuildAfterIndex: document.getElementById("autoBuildAfterIndex"), autoBuildStatus: document.getElementById("autoBuildStatus"),
+      refreshBtn: document.getElementById("refreshBtn"), backfillBtn: document.getElementById("backfillBtn"), batchBuildBtn: document.getElementById("batchBuildBtn"), batchRebuildBtn: document.getElementById("batchRebuildBtn"),
+      runningRows: document.getElementById("runningRows"), failedRows: document.getElementById("failedRows"), successRows: document.getElementById("successRows"),
+      runningCount: document.getElementById("runningCount"), failedCount: document.getElementById("failedCount"), successCount: document.getElementById("successCount")
+    };
+    let jobs = [];
+    el.stageNav.innerHTML = stageNav("extract");
+
+    function card(job) {
+      const s = job.outputSummary || job.output_summary || {};
+      return `<article class="card">
+        <div class="card-head"><div class="card-title"><strong>${escapeHtml(job.sourceFilename || job.sourceFileId || job.id)}</strong><span>${escapeHtml(job.id || "")}</span></div><span class="badge ${statusBadge(job.status)}">${escapeHtml(job.status || "-")}</span></div>
+        <div class="badge-row"><span class="badge">阶段 ${escapeHtml(job.stage || "-")}</span><span class="badge">触发 ${escapeHtml(job.triggerSource || job.trigger_source || "-")}</span><span class="badge">${escapeHtml(job.extractionDepth || "skeleton")}</span><span class="badge">${escapeHtml(job.scopeType || "document")}</span></div>
+        <div class="kv-grid">
+          <div class="kv"><span>候选chunk</span><strong>${escapeHtml(summaryValue(s, "chunkCount", "-"))}</strong></div>
+          <div class="kv"><span>选中chunk</span><strong>${escapeHtml(summaryValue(s, "selectedChunkCount", "-"))}</strong></div>
+          <div class="kv"><span>成功抽取</span><strong>${escapeHtml(summaryValue(s, "extractedChunkCount", "-"))}</strong></div>
+          <div class="kv"><span>实体提及</span><strong>${escapeHtml(summaryValue(s, "entityMentions", "-"))}</strong></div>
+          <div class="kv"><span>事实</span><strong>${escapeHtml(summaryValue(s, "facts", "-"))}</strong></div>
+        </div>
+        ${job.status === "failed" || job.status === "success" ? `<div class="actions"><button data-retry="${escapeHtml(job.id)}">重新开始</button></div>` : ""}
+        ${job.errorMessage ? `<div class="badge error">${escapeHtml(job.errorMessage)}</div>` : ""}
+      </article>`;
+    }
+
+    function render() {
+      const counts = jobs.reduce((acc, job) => { const k = String(job.status || "").toLowerCase(); acc[k] = (acc[k] || 0) + 1; return acc; }, {});
+      el.metrics.innerHTML = [metric("全部", jobs.length), metric("运行", counts.running || 0), metric("排队", counts.queued || 0), metric("成功", counts.success || 0), metric("失败", counts.failed || 0)].join("");
+      const running = jobs.filter(j => ["queued", "running"].includes(String(j.status || "").toLowerCase()));
+      const failed = jobs.filter(j => String(j.status || "").toLowerCase() === "failed");
+      const success = jobs.filter(j => String(j.status || "").toLowerCase() === "success");
+      el.runningCount.textContent = running.length; el.failedCount.textContent = failed.length; el.successCount.textContent = success.length;
+      el.runningRows.innerHTML = running.length ? running.map(card).join("") : `<div class="empty">没有运行中的任务</div>`;
+      el.failedRows.innerHTML = failed.length ? failed.map(card).join("") : `<div class="empty">没有失败任务</div>`;
+      el.successRows.innerHTML = success.length ? success.map(card).join("") : `<div class="empty">没有成功任务</div>`;
+    }
+
+    async function load() {
+      try {
+        const limit = Math.max(1, Math.min(Number(el.limit.value || 100), 500));
+        jobs = await request(`${API_BASE}/build-jobs${buildQuery({ status: el.status.value, limit })}`);
+        jobs = Array.isArray(jobs) ? jobs : [];
+        render();
+      } catch (error) {
+        showNotice(el.notice, `加载抽取任务失败：${error.message || error}`, true);
+      }
+    }
+    function renderRuntimeSettings(settings) {
+      const enabled = Boolean(settings && settings.autoBuildAfterIndex);
+      el.autoBuildAfterIndex.checked = enabled;
+      el.autoBuildStatus.textContent = enabled ? "自动建图已开启" : "自动建图已关闭";
+      el.autoBuildStatus.className = enabled ? "badge success" : "badge warning";
+    }
+    async function loadRuntimeSettings() {
+      try {
+        renderRuntimeSettings(await request(`${API_BASE}/runtime-settings`));
+      } catch (error) {
+        el.autoBuildStatus.textContent = "读取失败";
+        el.autoBuildStatus.className = "badge error";
+        showNotice(el.notice, `读取自动建图开关失败：${error.message || error}`, true);
+      }
+    }
+    async function updateAutoBuildAfterIndex() {
+      const enabled = el.autoBuildAfterIndex.checked;
+      el.autoBuildAfterIndex.disabled = true;
+      try {
+        const settings = await request(`${API_BASE}/runtime-settings/auto-build-after-index${buildQuery({ enabled })}`, { method: "POST" });
+        renderRuntimeSettings(settings);
+        showNotice(el.notice, enabled ? "已开启：后续文件索引完成后会自动创建骨架图谱任务" : "已关闭：后续文件索引完成后不会自动创建图谱任务", false);
+      } catch (error) {
+        el.autoBuildAfterIndex.checked = !enabled;
+        showNotice(el.notice, `保存自动建图开关失败：${error.message || error}`, true);
+      } finally {
+        el.autoBuildAfterIndex.disabled = false;
+      }
+    }
+    async function submit(url, message) {
+      try {
+        showNotice(el.notice, "", false);
+        const result = await request(url, { method: "POST" });
+        showNotice(el.notice, `${message}：匹配 ${result.matched ?? "-"}，入队 ${result.queued ?? "-"}`, false);
+        await load();
+      } catch (error) {
+        showNotice(el.notice, `操作失败：${error.message || error}`, true);
+      }
+    }
+    async function retry(id) {
+      try {
+        const result = await request(`${API_BASE}/build-jobs/${encodeURIComponent(id)}/retry`, { method: "POST" });
+        showNotice(el.notice, result.queued ? "任务已重新进入队列" : (result.message || "任务未入队"), !result.queued);
+        await load();
+      } catch (error) {
+        showNotice(el.notice, `重新开始失败：${error.message || error}`, true);
+      }
+    }
+    el.refreshBtn.addEventListener("click", load);
+    el.status.addEventListener("change", load);
+    el.limit.addEventListener("change", load);
+    el.autoBuildAfterIndex.addEventListener("change", updateAutoBuildAfterIndex);
+    function buildSubmitQuery(rebuildSuccess) {
+      return buildQuery({
+        limit: el.limit.value,
+        dataSourceId: el.dataSourceId.value,
+        rebuildSuccess,
+        extractionDepth: "skeleton",
+        scopeType: "document"
+      });
+    }
+    el.backfillBtn.addEventListener("click", () => submit(`${API_BASE}/build-jobs/backfill-missing${buildQuery({ limit: el.limit.value, dataSourceId: el.dataSourceId.value })}`, "补建已提交"));
+    el.batchBuildBtn.addEventListener("click", () => submit(`${API_BASE}/build-jobs/batch${buildSubmitQuery(false)}`, "抽取已提交"));
+    el.batchRebuildBtn.addEventListener("click", () => submit(`${API_BASE}/build-jobs/batch${buildSubmitQuery(true)}`, "重建已提交"));
+    document.body.addEventListener("click", event => { const btn = event.target.closest("[data-retry]"); if (btn) retry(btn.getAttribute("data-retry")); });
+    loadRuntimeSettings();
+    load();
+  </script>
+</body>
+</html>

@@ -628,12 +628,6 @@ public class DocumentPipelineService {
             score += 0.3;
         }
 
-        String lowered = content.toLowerCase();
-        for (String term : List.of("标准", "要求", "必须", "应", "不得", "功能", "流程", "服务", "接口", "性能", "安全", "数据", "指标")) {
-            if (lowered.contains(term)) {
-                score += 0.55;
-            }
-        }
         return score;
     }
 
