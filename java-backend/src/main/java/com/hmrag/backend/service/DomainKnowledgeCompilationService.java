@@ -220,6 +220,8 @@ public class DomainKnowledgeCompilationService {
         snapshot.put("excludeDataSources", new ArrayList<>(domain.getExcludeDataSourcesJson()));
         snapshot.put("retrievalTerms", evidence.terms());
         snapshot.put("evidenceWarnings", evidence.warnings());
+        snapshot.put("topicSubgraph", evidence.topicSubgraph());
+        snapshot.put("evidencePack", evidence.evidencePack());
         snapshot.put("documents", evidence.documents());
         snapshot.put("knowledgeUnits", evidence.knowledgeUnits());
         snapshot.put("chunks", evidence.chunks());
@@ -485,7 +487,7 @@ public class DomainKnowledgeCompilationService {
                 knowledgeUnits,
                 chunks
         );
-        collectGraphEvidence(
+        List<Map<String, Object>> graphFacts = collectGraphEvidence(
                 jobId,
                 retrievalPlan,
                 excludedTerms,
@@ -600,11 +602,18 @@ public class DomainKnowledgeCompilationService {
             evidenceRefs.add("chunk:" + item.get("chunkId"));
         }
 
+        List<Map<String, Object>> selectedGraphFacts = selectGraphFactsForEvidence(graphFacts, topDocuments, topKnowledgeUnits, topChunks);
+        Map<String, Object> topicSubgraph = buildTopicSubgraph(retrievalPlan, selectedGraphFacts, topDocuments, topKnowledgeUnits, topChunks);
+        Map<String, Object> evidencePack = buildEvidencePack(topDocuments, topKnowledgeUnits, topChunks, selectedGraphFacts, evidenceRefs, evidenceWarnings);
+
         return new EvidenceBundle(
                 retrievalPlan.allTerms(),
                 topDocuments,
                 topKnowledgeUnits,
                 topChunks,
+                selectedGraphFacts,
+                topicSubgraph,
+                evidencePack,
                 evidenceRefs,
                 evidenceWarnings
         );
@@ -1201,7 +1210,7 @@ public class DomainKnowledgeCompilationService {
         }
     }
 
-    private void collectGraphEvidence(
+    private List<Map<String, Object>> collectGraphEvidence(
             UUID jobId,
             RetrievalPlan retrievalPlan,
             List<String> excludedTerms,
@@ -1212,7 +1221,7 @@ public class DomainKnowledgeCompilationService {
             ScoreAccumulator chunks
     ) {
         if (!knowledgeGraphStoreClient.isConfigured() || retrievalPlan == null || retrievalPlan.allTerms().isEmpty()) {
-            return;
+            return List.of();
         }
         String queryText = String.join(" ", retrievalPlan.allTerms());
         try {
@@ -1228,7 +1237,7 @@ public class DomainKnowledgeCompilationService {
                         "graphFactCount", 0,
                         "chunkCount", chunks.size()
                 ));
-                return;
+                return List.of();
             }
             List<Map<String, Object>> graphChunks = filterExcludedItems(
                     collectGraphFactChunks(facts, includeIds, excludeIds),
@@ -1246,17 +1255,29 @@ public class DomainKnowledgeCompilationService {
             for (Map<String, Object> item : collectDocumentsByIds(graphDocIds, includeIds, excludeIds)) {
                 docs.add((String) item.get("docId"), item, 0.9 * retrievalScore(item));
             }
+            Set<String> acceptedChunkIds = graphChunks.stream()
+                    .map(item -> trimToNull(item.get("chunkId")))
+                    .filter(id -> id != null)
+                    .collect(Collectors.toCollection(LinkedHashSet::new));
+            List<Map<String, Object>> acceptedFacts = facts.stream()
+                    .filter(fact -> acceptedChunkIds.contains(trimToNull(fact.get("chunkId"))))
+                    .map(this::slimGraphFact)
+                    .limit(80)
+                    .toList();
             markJobProgress(jobId, "collecting_graph_evidence", Map.of(
                     "graphFactCount", facts.size(),
+                    "acceptedGraphFactCount", acceptedFacts.size(),
                     "graphEvidenceChunkCount", graphChunks.size(),
                     "documentCount", docs.size(),
                     "chunkCount", chunks.size()
             ));
+            return acceptedFacts;
         } catch (Exception ex) {
             log.warn("Domain knowledge graph evidence skipped: jobId={}, error={}", jobId, ex.getMessage());
             markJobProgress(jobId, "collecting_graph_evidence_skipped", Map.of(
                     "reason", ex.getMessage() == null ? ex.getClass().getSimpleName() : ex.getMessage()
             ));
+            return List.of();
         }
     }
 
@@ -2627,7 +2648,10 @@ public class DomainKnowledgeCompilationService {
         structured.put("cards", cards);
         structured.put("evidenceBindings", evidenceBindings);
         structured.put("validation", validation);
-        structured.put("agentView", buildAgentView(domain, topic, catalog, cards, validation));
+        structured.put("topicSubgraph", evidence.topicSubgraph());
+        structured.put("evidencePack", compactEvidencePack(evidence.evidencePack()));
+        structured.put("readableSummary", buildReadableSummary(domain, topic, summary, keyPoints, validation));
+        structured.put("agentView", buildAgentView(domain, topic, catalog, cards, validation, evidence));
         return structured;
     }
 
@@ -2735,7 +2759,10 @@ public class DomainKnowledgeCompilationService {
         structured.put("cards", cards);
         structured.put("evidenceBindings", bindings);
         structured.put("validation", validation);
-        structured.put("agentView", buildAgentView(domain, topic, catalog, cards, validation));
+        structured.put("topicSubgraph", evidence.topicSubgraph());
+        structured.put("evidencePack", compactEvidencePack(evidence.evidencePack()));
+        structured.put("readableSummary", buildReadableSummary(domain, topic, summary, keyPoints, validation));
+        structured.put("agentView", buildAgentView(domain, topic, catalog, cards, validation, evidence));
         return structured;
     }
 
@@ -2788,6 +2815,9 @@ public class DomainKnowledgeCompilationService {
         validation.put("boundClaimRatio", Math.round(boundRatio * 100.0) / 100.0);
         validation.put("evidenceCount", evidence.evidenceRefs().size());
         validation.put("documentCount", evidence.documents().size());
+        validation.put("graphFactCount", evidence.graphFacts().size());
+        validation.put("subgraphEntityCount", clampInt(toRecord(evidence.topicSubgraph().get("stats")).get("entityCount"), 0, 100000, 0));
+        validation.put("subgraphRelationCount", clampInt(toRecord(evidence.topicSubgraph().get("stats")).get("relationCount"), 0, 100000, 0));
         validation.put("lowEvidenceNodeCount", lowEvidenceNodes);
         validation.put("excludedHitCount", excludedHitCount);
         validation.put("evidenceBindingCount", evidenceBindings.size());
@@ -2825,18 +2855,267 @@ public class DomainKnowledgeCompilationService {
             TopicDefinition topic,
             List<Map<String, Object>> catalog,
             List<Map<String, Object>> cards,
-            Map<String, Object> validation
+            Map<String, Object> validation,
+            EvidenceBundle evidence
     ) {
         Map<String, Object> view = new LinkedHashMap<>();
         view.put("domainName", domain.getName());
         view.put("topicName", topic == null ? null : topic.getName());
         view.put("catalogTitles", catalog.stream().map(item -> item.get("title")).limit(20).toList());
         view.put("topCards", cards.stream().limit(12).toList());
+        view.put("topicSubgraphStats", toRecord(evidence.topicSubgraph().get("stats")));
+        view.put("evidencePackStats", toRecord(evidence.evidencePack().get("stats")));
+        view.put("graphEdges", toRecordList(evidence.topicSubgraph().get("edges")).stream().limit(24).toList());
         view.put("constraints", Map.of(
                 "validationStatus", validation.get("status"),
-                "mustUseEvidenceRefs", true
+                "mustUseEvidenceRefs", true,
+                "subgraphIsSnapshot", true
         ));
         return view;
+    }
+
+    private List<Map<String, Object>> selectGraphFactsForEvidence(
+            List<Map<String, Object>> graphFacts,
+            List<Map<String, Object>> documents,
+            List<Map<String, Object>> knowledgeUnits,
+            List<Map<String, Object>> chunks
+    ) {
+        if (graphFacts == null || graphFacts.isEmpty()) {
+            return List.of();
+        }
+        Set<String> docIds = new LinkedHashSet<>();
+        Set<String> chunkIds = new LinkedHashSet<>();
+        for (Map<String, Object> item : documents == null ? List.<Map<String, Object>>of() : documents) {
+            addIfPresent(docIds, item.get("docId"));
+        }
+        for (Map<String, Object> item : knowledgeUnits == null ? List.<Map<String, Object>>of() : knowledgeUnits) {
+            addIfPresent(docIds, item.get("docId"));
+            addIfPresent(chunkIds, item.get("chunkId"));
+        }
+        for (Map<String, Object> item : chunks == null ? List.<Map<String, Object>>of() : chunks) {
+            addIfPresent(docIds, item.get("docId"));
+            addIfPresent(chunkIds, item.get("chunkId"));
+        }
+        List<Map<String, Object>> selected = graphFacts.stream()
+                .filter(fact -> {
+                    String chunkId = trimToNull(fact.get("chunkId"));
+                    String docId = trimToNull(fact.get("docId"));
+                    return (chunkId != null && chunkIds.contains(chunkId))
+                            || (docId != null && docIds.contains(docId));
+                })
+                .limit(80)
+                .toList();
+        if (!selected.isEmpty()) {
+            return selected;
+        }
+        return graphFacts.stream().limit(40).toList();
+    }
+
+    private void addIfPresent(Set<String> values, Object raw) {
+        String value = trimToNull(raw);
+        if (value != null) {
+            values.add(value);
+        }
+    }
+
+    private Map<String, Object> buildTopicSubgraph(
+            RetrievalPlan retrievalPlan,
+            List<Map<String, Object>> graphFacts,
+            List<Map<String, Object>> documents,
+            List<Map<String, Object>> knowledgeUnits,
+            List<Map<String, Object>> chunks
+    ) {
+        List<Map<String, Object>> facts = graphFacts == null ? List.of() : graphFacts.stream().limit(80).toList();
+        LinkedHashMap<String, Map<String, Object>> nodes = new LinkedHashMap<>();
+        List<Map<String, Object>> edges = new ArrayList<>();
+        List<String> dimensions = retrievalPlan == null || retrievalPlan.dimensions() == null
+                ? List.of()
+                : retrievalPlan.dimensions().stream().map(RetrievalDimension::name).toList();
+        Map<String, Integer> dimensionFactCounts = new LinkedHashMap<>();
+        for (Map<String, Object> fact : facts) {
+            String subject = firstNonBlank(trimToNull(fact.get("subject")), "未知主体");
+            String object = firstNonBlank(trimToNull(fact.get("object")), "未知客体");
+            String subjectType = firstNonBlank(trimToNull(fact.get("subjectType")), "Entity");
+            String objectType = firstNonBlank(trimToNull(fact.get("objectType")), "Entity");
+            String subjectId = graphNodeId(subjectType, subject);
+            String objectId = graphNodeId(objectType, object);
+            addGraphNode(nodes, subjectId, subject, subjectType, fact);
+            addGraphNode(nodes, objectId, object, objectType, fact);
+            String dimension = bestGroupName(graphFactText(fact), dimensions);
+            dimensionFactCounts.merge(dimension, 1, Integer::sum);
+
+            Map<String, Object> edge = new LinkedHashMap<>();
+            edge.put("id", firstNonBlank(trimToNull(fact.get("factKey")), subjectId + "->" + objectId + ":" + edges.size()));
+            edge.put("source", subjectId);
+            edge.put("target", objectId);
+            edge.put("subject", subject);
+            edge.put("object", object);
+            edge.put("relationType", firstNonBlank(trimToNull(fact.get("relationType")), "related_to"));
+            edge.put("statement", limitText(trimToNull(fact.get("statement")), 180));
+            edge.put("confidence", fact.get("confidence"));
+            edge.put("dimension", dimension);
+            edge.put("validFrom", trimToNull(fact.get("validFrom")));
+            edge.put("validTo", trimToNull(fact.get("validTo")));
+            edge.put("evidenceRef", graphFactEvidenceRef(fact));
+            edge.put("docId", trimToNull(fact.get("docId")));
+            edge.put("chunkId", trimToNull(fact.get("chunkId")));
+            edge.put("sourceSpan", limitText(trimToNull(fact.get("sourceSpan")), 160));
+            edges.add(edge);
+        }
+
+        List<Map<String, Object>> dimensionItems = new ArrayList<>();
+        for (String dimension : dimensions.isEmpty() ? List.of("综合证据") : dimensions) {
+            Map<String, Object> item = new LinkedHashMap<>();
+            item.put("name", dimension);
+            item.put("factCount", dimensionFactCounts.getOrDefault(dimension, 0));
+            item.put("status", dimensionFactCounts.getOrDefault(dimension, 0) > 0 ? "covered" : "no_graph_fact");
+            dimensionItems.add(item);
+        }
+        if (!dimensionFactCounts.containsKey("综合证据") && dimensionItems.stream().noneMatch(item -> "综合证据".equals(item.get("name")))) {
+            Map<String, Object> item = new LinkedHashMap<>();
+            item.put("name", "综合证据");
+            item.put("factCount", dimensionFactCounts.getOrDefault("综合证据", 0));
+            item.put("status", dimensionFactCounts.getOrDefault("综合证据", 0) > 0 ? "covered" : "no_graph_fact");
+            dimensionItems.add(item);
+        }
+
+        Set<String> docIds = new LinkedHashSet<>();
+        Set<String> chunkIds = new LinkedHashSet<>();
+        for (Map<String, Object> fact : facts) {
+            addIfPresent(docIds, fact.get("docId"));
+            addIfPresent(chunkIds, fact.get("chunkId"));
+        }
+
+        Map<String, Object> stats = new LinkedHashMap<>();
+        stats.put("entityCount", nodes.size());
+        stats.put("relationCount", edges.size());
+        stats.put("factCount", facts.size());
+        stats.put("documentCount", docIds.size());
+        stats.put("chunkCount", chunkIds.size());
+        stats.put("retrievedDocumentCount", documents == null ? 0 : documents.size());
+        stats.put("retrievedKnowledgeUnitCount", knowledgeUnits == null ? 0 : knowledgeUnits.size());
+        stats.put("retrievedChunkCount", chunks == null ? 0 : chunks.size());
+
+        Map<String, Object> subgraph = new LinkedHashMap<>();
+        subgraph.put("version", "v1");
+        subgraph.put("kind", "topic_subgraph_snapshot");
+        subgraph.put("source", "knowledge_graph_search_facts");
+        subgraph.put("stats", stats);
+        subgraph.put("dimensions", dimensionItems);
+        subgraph.put("nodes", new ArrayList<>(nodes.values()));
+        subgraph.put("edges", edges);
+        subgraph.put("warnings", facts.isEmpty()
+                ? List.of("未召回可绑定的图谱事实，知识包将主要依赖索引证据")
+                : List.of());
+        return subgraph;
+    }
+
+    private String graphNodeId(String type, String name) {
+        String normalizedType = firstNonBlank(trimToNull(type), "entity").toLowerCase(Locale.ROOT);
+        String normalizedName = normalizeForMatch(name);
+        if (normalizedName.isBlank()) {
+            normalizedName = UUID.nameUUIDFromBytes(String.valueOf(name).getBytes()).toString();
+        }
+        return normalizedType + ":" + normalizedName;
+    }
+
+    private void addGraphNode(LinkedHashMap<String, Map<String, Object>> nodes, String id, String label, String type, Map<String, Object> fact) {
+        Map<String, Object> node = nodes.computeIfAbsent(id, ignored -> {
+            Map<String, Object> item = new LinkedHashMap<>();
+            item.put("id", id);
+            item.put("label", label);
+            item.put("type", type);
+            item.put("factCount", 0);
+            item.put("evidenceRefs", new ArrayList<String>());
+            return item;
+        });
+        node.put("factCount", clampInt(node.get("factCount"), 0, 100000, 0) + 1);
+        addUniqueString(node, "evidenceRefs", graphFactEvidenceRef(fact));
+    }
+
+    private String graphFactText(Map<String, Object> fact) {
+        StringBuilder builder = new StringBuilder();
+        appendValue(builder, fact.get("subject"));
+        appendValue(builder, fact.get("subjectType"));
+        appendValue(builder, fact.get("relationType"));
+        appendValue(builder, fact.get("object"));
+        appendValue(builder, fact.get("objectType"));
+        appendValue(builder, fact.get("statement"));
+        appendValue(builder, fact.get("sourceSpan"));
+        return builder.toString();
+    }
+
+    private String graphFactEvidenceRef(Map<String, Object> fact) {
+        String chunkId = trimToNull(fact.get("chunkId"));
+        if (chunkId != null) {
+            return "chunk:" + chunkId;
+        }
+        String knowledgeUnitId = trimToNull(fact.get("knowledgeUnitId"));
+        if (knowledgeUnitId != null) {
+            return "knowledge_unit:" + knowledgeUnitId;
+        }
+        String docId = trimToNull(fact.get("docId"));
+        return docId == null ? "" : "document:" + docId;
+    }
+
+    private Map<String, Object> buildEvidencePack(
+            List<Map<String, Object>> documents,
+            List<Map<String, Object>> knowledgeUnits,
+            List<Map<String, Object>> chunks,
+            List<Map<String, Object>> graphFacts,
+            List<String> evidenceRefs,
+            List<String> warnings
+    ) {
+        Map<String, Object> stats = new LinkedHashMap<>();
+        stats.put("documentCount", documents == null ? 0 : documents.size());
+        stats.put("knowledgeUnitCount", knowledgeUnits == null ? 0 : knowledgeUnits.size());
+        stats.put("chunkCount", chunks == null ? 0 : chunks.size());
+        stats.put("graphFactCount", graphFacts == null ? 0 : graphFacts.size());
+        stats.put("evidenceRefCount", evidenceRefs == null ? 0 : evidenceRefs.size());
+        stats.put("warningCount", warnings == null ? 0 : warnings.size());
+
+        Map<String, Object> pack = new LinkedHashMap<>();
+        pack.put("version", "v1");
+        pack.put("kind", "evidence_pack");
+        pack.put("stats", stats);
+        pack.put("evidenceRefs", evidenceRefs == null ? List.of() : evidenceRefs);
+        pack.put("documents", documents == null ? List.of() : documents.stream().map(this::slimDocument).toList());
+        pack.put("knowledgeUnits", knowledgeUnits == null ? List.of() : knowledgeUnits.stream().map(this::slimKnowledgeUnit).toList());
+        pack.put("chunks", chunks == null ? List.of() : chunks.stream().map(this::slimChunk).toList());
+        pack.put("graphFacts", graphFacts == null ? List.of() : graphFacts.stream().map(this::slimGraphFact).toList());
+        pack.put("warnings", warnings == null ? List.of() : warnings);
+        return pack;
+    }
+
+    private Map<String, Object> compactEvidencePack(Map<String, Object> evidencePack) {
+        Map<String, Object> source = evidencePack == null ? Map.of() : evidencePack;
+        Map<String, Object> compact = new LinkedHashMap<>();
+        compact.put("version", source.getOrDefault("version", "v1"));
+        compact.put("kind", source.getOrDefault("kind", "evidence_pack"));
+        compact.put("stats", toRecord(source.get("stats")));
+        compact.put("evidenceRefs", toStringList(source.get("evidenceRefs")).stream().limit(80).toList());
+        compact.put("documents", toRecordList(source.get("documents")).stream().limit(20).toList());
+        compact.put("knowledgeUnits", toRecordList(source.get("knowledgeUnits")).stream().limit(40).toList());
+        compact.put("chunks", toRecordList(source.get("chunks")).stream().limit(40).toList());
+        compact.put("graphFacts", toRecordList(source.get("graphFacts")).stream().limit(60).toList());
+        compact.put("warnings", toStringList(source.get("warnings")).stream().limit(20).toList());
+        return compact;
+    }
+
+    private Map<String, Object> buildReadableSummary(
+            DomainDefinition domain,
+            TopicDefinition topic,
+            String summary,
+            List<String> keyPoints,
+            Map<String, Object> validation
+    ) {
+        Map<String, Object> readable = new LinkedHashMap<>();
+        readable.put("title", buildTitle(domain, topic));
+        readable.put("summary", summary == null ? "" : summary);
+        readable.put("keyPoints", keyPoints == null ? List.of() : keyPoints);
+        readable.put("validationStatus", validation == null ? "review_required" : validation.getOrDefault("status", "review_required"));
+        readable.put("usage", "面向智能体和用户阅读的主题知识总结；事实依据请回溯 evidencePack 和 topicSubgraph");
+        return readable;
     }
 
     private List<Map<String, Object>> buildEvidenceGroups(
@@ -2867,6 +3146,14 @@ public class DomainKnowledgeCompilationService {
             }
             String groupName = bestGroupName(text, dimensions);
             addChunkToGroup(groups.computeIfAbsent(groupName, this::newEvidenceGroup), item);
+        }
+        for (Map<String, Object> item : evidence.graphFacts()) {
+            String text = graphFactText(item);
+            if (matchesExcludedTerm(text, excludedTerms)) {
+                continue;
+            }
+            String groupName = bestGroupName(text, dimensions);
+            addGraphFactToGroup(groups.computeIfAbsent(groupName, this::newEvidenceGroup), item);
         }
         for (Map<String, Object> group : groups.values()) {
             addRelatedDocuments(group, evidence.documents());
@@ -2900,6 +3187,7 @@ public class DomainKnowledgeCompilationService {
         group.put("documents", new ArrayList<Map<String, Object>>());
         group.put("knowledgeUnits", new ArrayList<Map<String, Object>>());
         group.put("chunks", new ArrayList<Map<String, Object>>());
+        group.put("graphFacts", new ArrayList<Map<String, Object>>());
         return group;
     }
 
@@ -2982,6 +3270,22 @@ public class DomainKnowledgeCompilationService {
     }
 
     @SuppressWarnings("unchecked")
+    private void addGraphFactToGroup(Map<String, Object> group, Map<String, Object> item) {
+        String ref = graphFactEvidenceRef(item);
+        if (ref == null || ref.isBlank()) {
+            return;
+        }
+        List<String> refs = (List<String>) group.get("evidenceRefs");
+        if (!refs.contains(ref)) {
+            refs.add(ref);
+        }
+        List<Map<String, Object>> items = (List<Map<String, Object>>) group.get("graphFacts");
+        if (items.size() < 8) {
+            items.add(slimGraphFact(item));
+        }
+    }
+
+    @SuppressWarnings("unchecked")
     private void addRelatedDocuments(Map<String, Object> group, List<Map<String, Object>> documents) {
         List<Map<String, Object>> groupDocs = (List<Map<String, Object>>) group.get("documents");
         Set<String> docIds = new LinkedHashSet<>();
@@ -2989,6 +3293,9 @@ public class DomainKnowledgeCompilationService {
             docIds.add(String.valueOf(item.get("docId")));
         }
         for (Map<String, Object> item : toRecordList(group.get("chunks"))) {
+            docIds.add(String.valueOf(item.get("docId")));
+        }
+        for (Map<String, Object> item : toRecordList(group.get("graphFacts"))) {
             docIds.add(String.valueOf(item.get("docId")));
         }
         for (Map<String, Object> document : documents) {
@@ -3030,6 +3337,31 @@ public class DomainKnowledgeCompilationService {
         result.put("title", limitText(trimToNull(item.get("title")), 80));
         result.put("pageNo", item.get("pageNo"));
         result.put("snippetPreview", limitText(trimToNull(item.get("snippet")), 160));
+        if (trimToNull(item.get("graphFactKey")) != null) {
+            result.put("graphFactKey", item.get("graphFactKey"));
+            result.put("graphRelationType", item.get("graphRelationType"));
+        }
+        return result;
+    }
+
+    private Map<String, Object> slimGraphFact(Map<String, Object> fact) {
+        Map<String, Object> result = new LinkedHashMap<>();
+        result.put("factKey", fact.get("factKey"));
+        result.put("subject", limitText(trimToNull(fact.get("subject")), 80));
+        result.put("subjectType", trimToNull(fact.get("subjectType")));
+        result.put("relationType", firstNonBlank(trimToNull(fact.get("relationType")), "related_to"));
+        result.put("object", limitText(trimToNull(fact.get("object")), 80));
+        result.put("objectType", trimToNull(fact.get("objectType")));
+        result.put("statement", limitText(trimToNull(fact.get("statement")), 180));
+        result.put("confidence", fact.get("confidence"));
+        result.put("validFrom", trimToNull(fact.get("validFrom")));
+        result.put("validTo", trimToNull(fact.get("validTo")));
+        result.put("docId", trimToNull(fact.get("docId")));
+        result.put("chunkId", trimToNull(fact.get("chunkId")));
+        result.put("knowledgeUnitId", trimToNull(fact.get("knowledgeUnitId")));
+        result.put("evidenceRef", graphFactEvidenceRef(fact));
+        result.put("sourceSpan", limitText(trimToNull(fact.get("sourceSpan")), 160));
+        result.put("tokenScore", fact.get("tokenScore"));
         return result;
     }
 
@@ -3399,6 +3731,9 @@ public class DomainKnowledgeCompilationService {
             List<Map<String, Object>> documents,
             List<Map<String, Object>> knowledgeUnits,
             List<Map<String, Object>> chunks,
+            List<Map<String, Object>> graphFacts,
+            Map<String, Object> topicSubgraph,
+            Map<String, Object> evidencePack,
             List<String> evidenceRefs,
             List<String> warnings
     ) {

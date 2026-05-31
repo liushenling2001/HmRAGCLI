@@ -317,7 +317,7 @@ public class DomainKnowledgeRefinementService {
         builder.append("1. summary 不超过 220 字。\n");
         builder.append("2. keyPoints 返回 4 到 8 条字符串。\n");
         builder.append("3. markdown 用中文，结构清晰，包含“核心结论”“重要证据”“使用建议”三个小节。\n");
-        builder.append("4. structuredContent 必须包含 version,catalog,cards,evidenceBindings,validation。\n");
+        builder.append("4. structuredContent 必须包含 version,catalog,cards,evidenceBindings,validation；后端会补充 topicSubgraph、evidencePack、readableSummary。\n");
         builder.append("5. catalog 是最多 3 层的知识目录，一级目录必须是领域子域，不要使用论文题名、文件名或长句当目录。\n");
         builder.append("6. catalog 控制在 4 到 8 个节点，cards 控制在 6 到 10 张，每张卡片必须有 catalogId,type,title,summary,claims。\n");
         builder.append("7. 每张卡片 1 到 2 条 claim；每条 claim 必须绑定下面提供的 evidenceRef，不允许编造 evidenceRef。\n");
@@ -325,7 +325,8 @@ public class DomainKnowledgeRefinementService {
         builder.append("9. 不要编造证据，不要加入未提供的新事实。\n\n");
         builder.append("10. 必须严格执行领域构建规格中的 scope.excludeTerms/negativeTerms；排除项不能进入目录、卡片、结论和证据绑定。\n");
         builder.append("11. 必须围绕领域构建规格中的 knowledgeDimensions/agentUseCases/catalogRules 组织目录，不能只围绕领域名称或文件标题组织。\n");
-        builder.append("12. 只能基于分组精炼摘要和少量证据索引做总融合；后续智能体可通过 evidenceRef 回溯正文。\n\n");
+        builder.append("12. 只能基于分组精炼摘要、图谱事实和少量证据索引做总融合；后续智能体可通过 evidenceRef 回溯正文。\n");
+        builder.append("13. 如果证据组包含 graphFacts，应优先把这些实体关系作为目录和卡片的结构骨架，但结论仍必须绑定 evidenceRefs。\n\n");
         builder.append("structuredContent 示例结构:\n");
         builder.append("{\"version\":\"v1\",\"catalog\":[{\"id\":\"cat_001\",\"parentId\":null,\"level\":1,\"title\":\"目录名\",\"summary\":\"...\",\"keywords\":[],\"evidenceRefs\":[\"chunk:...\"]}],\"cards\":[{\"id\":\"card_001\",\"catalogId\":\"cat_001\",\"type\":\"concept\",\"title\":\"卡片名\",\"summary\":\"...\",\"claims\":[{\"text\":\"结论\",\"confidence\":\"high\",\"evidenceRefs\":[\"chunk:...\"]}]}],\"evidenceBindings\":[{\"evidenceRef\":\"chunk:...\",\"catalogIds\":[\"cat_001\"],\"cardIds\":[\"card_001\"],\"claimTexts\":[\"结论\"]}],\"validation\":{\"status\":\"ready\",\"warnings\":[]}}\n\n");
         builder.append("标题: ").append(safe(title)).append("\n");
@@ -431,6 +432,7 @@ public class DomainKnowledgeRefinementService {
         compact.put("documents", limitedObjectList(group == null ? null : group.get("documents"), 4));
         compact.put("knowledgeUnits", limitedObjectList(group == null ? null : group.get("knowledgeUnits"), 5));
         compact.put("chunks", limitedObjectList(group == null ? null : group.get("chunks"), 5));
+        compact.put("graphFacts", limitedObjectList(group == null ? null : group.get("graphFacts"), 5));
         compact.put("note", "这里只提供代表性证据窗口；完整证据引用已在后端保存，返回 evidenceRefs 时只能从上述 evidenceRefs 中选择。");
         return compact;
     }

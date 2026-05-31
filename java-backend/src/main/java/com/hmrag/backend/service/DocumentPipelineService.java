@@ -4,6 +4,8 @@ import com.fasterxml.jackson.core.JsonProcessingException;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.hmrag.backend.config.AppProperties;
 import com.hmrag.backend.domain.SourceFile;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 import org.springframework.jdbc.core.namedparam.MapSqlParameterSource;
 import org.springframework.jdbc.core.namedparam.NamedParameterJdbcTemplate;
 import org.springframework.stereotype.Service;
@@ -23,12 +25,15 @@ import java.util.regex.Pattern;
 @Service
 public class DocumentPipelineService {
 
+    private static final Logger log = LoggerFactory.getLogger(DocumentPipelineService.class);
+
     private final NamedParameterJdbcTemplate jdbcTemplate;
     private final ObjectMapper objectMapper;
     private final AppProperties appProperties;
     private final RobustDocumentParser robustDocumentParser;
     private final AiExtractionService aiExtractionService;
     private final EmbeddingService embeddingService;
+    private final DocumentProfileService documentProfileService;
 
     public DocumentPipelineService(
             NamedParameterJdbcTemplate jdbcTemplate,
@@ -36,7 +41,8 @@ public class DocumentPipelineService {
             AppProperties appProperties,
             RobustDocumentParser robustDocumentParser,
             AiExtractionService aiExtractionService,
-            EmbeddingService embeddingService
+            EmbeddingService embeddingService,
+            DocumentProfileService documentProfileService
     ) {
         this.jdbcTemplate = jdbcTemplate;
         this.objectMapper = objectMapper;
@@ -44,6 +50,7 @@ public class DocumentPipelineService {
         this.robustDocumentParser = robustDocumentParser;
         this.aiExtractionService = aiExtractionService;
         this.embeddingService = embeddingService;
+        this.documentProfileService = documentProfileService;
     }
 
     public UUID materializeParseArtifacts(SourceFile file) {
@@ -55,6 +62,7 @@ public class DocumentPipelineService {
         ParsedDocument parsed = parseSourceFile(file, progress);
         UUID docId = upsertDocument(file, parsed);
         List<UUID> chunkIds = recreateChunks(file, docId, parsed, progress);
+        refreshDocumentProfile(docId, "parse");
         file.setDocId(docId);
         file.setParseStatus("success");
         file.setProcessingStage("parse");
@@ -162,6 +170,7 @@ public class DocumentPipelineService {
         if (inserted == 0) {
             throw new IllegalStateException("No knowledge units were materialized for source file " + file.getId());
         }
+        refreshDocumentProfile(docId, "extract");
         file.setExtractStatus("success");
         file.setProcessingStage("extract");
         file.setErrorMessage(null);
@@ -720,6 +729,17 @@ public class DocumentPipelineService {
     private void throwIfCancelled() {
         if (Thread.currentThread().isInterrupted()) {
             throw new TaskCancelledException("CANCELLED_BY_USER");
+        }
+    }
+
+    private void refreshDocumentProfile(UUID docId, String stage) {
+        if (documentProfileService == null || docId == null) {
+            return;
+        }
+        try {
+            documentProfileService.refreshProfile(docId);
+        } catch (Exception ex) {
+            log.warn("Document profile refresh skipped: docId={}, stage={}, error={}", docId, stage, ex.getMessage());
         }
     }
 

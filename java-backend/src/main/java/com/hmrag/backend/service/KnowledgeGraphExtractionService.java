@@ -216,6 +216,7 @@ public class KnowledgeGraphExtractionService {
         metadata.put("model", config.extractionLlm().model());
         metadata.put("provider", normalizeProvider(config.extractionLlm().provider()));
         metadata.put("extractionProfile", extractionProfile);
+        metadata.put("documentProfile", compactDocumentProfile(document));
         metadata.put("extractionDepth", options.extractionDepth());
         metadata.put("scopeType", options.scopeType());
         metadata.put("scopeKey", options.scopeKey() == null ? "" : options.scopeKey());
@@ -1320,7 +1321,7 @@ public class KnowledgeGraphExtractionService {
     ) {
         try {
             Map<String, Object> input = new LinkedHashMap<>();
-            input.put("promptVersion", "triple-candidate-fact-compatible-v5-guarded-structure-context");
+            input.put("promptVersion", "triple-candidate-fact-compatible-v6-document-profile-routing");
             input.put("document", documentPromptContext(document));
             input.put("chunks", chunks);
             input.put("knowledgeUnits", unitsPromptContext(units));
@@ -1641,11 +1642,13 @@ public class KnowledgeGraphExtractionService {
         String depthInstruction = "enrichment".equals(options.extractionDepth())
                 ? "当前任务是局部深化补充：优先补充作用域相关实体的属性、关系、阶段变化和证据，不要重复泛化整篇文档。"
                 : "当前任务是全量骨架构建：优先抽取核心实体、粗关系、主题和文档级事实，避免过细碎的低价值对象。";
+        String profileInstruction = documentProfileInstruction(extractionProfile, document);
         return """
                 你是严格的信息三元组抽取器。请只返回一个 JSON 对象，不要 Markdown。
                 目标：从当前 chunk 批次中高召回抽取“候选事实三元组”，后端会再做实体匹配、属性/关系分流、文档级合并和全局融合。
                 当前批次：%s / %s。
                 抽取深度：%s；作用域：%s；作用域键：%s。
+                %s
                 %s
 
                 必须返回字段：
@@ -1716,6 +1719,7 @@ public class KnowledgeGraphExtractionService {
                 options.scopeType(),
                 options.scopeKey() == null ? "" : options.scopeKey(),
                 depthInstruction,
+                profileInstruction,
                 EXTRACTION_MAX_FACTS_PER_BATCH,
                 EXTRACTION_MAX_FACTS_PER_CHUNK,
                 EXTRACTION_MAX_RESPONSE_CHARS,
@@ -1741,7 +1745,64 @@ public class KnowledgeGraphExtractionService {
                     "keywords", stringList(overview.get("keywords")).stream().limit(16).toList()
             ));
         }
+        Map<String, Object> documentProfile = compactDocumentProfile(document);
+        if (!documentProfile.isEmpty()) {
+            context.put("documentProfile", documentProfile);
+        }
         return context;
+    }
+
+    private Map<String, Object> compactDocumentProfile(Map<String, Object> document) {
+        Map<String, Object> metadata = mapFromObject(document == null ? null : document.get("metadata"));
+        Map<String, Object> profile = mapFromObject(metadata.get("documentProfile"));
+        if (profile.isEmpty()) {
+            return Map.of();
+        }
+        Map<String, Object> compact = new LinkedHashMap<>();
+        compact.put("docType", profile.get("docType"));
+        compact.put("structureType", profile.get("structureType"));
+        compact.put("knowledgeDensity", profile.get("knowledgeDensity"));
+        compact.put("graphSuitability", profile.get("graphSuitability"));
+        compact.put("recommendedStrategy", profile.get("recommendedStrategy"));
+        compact.put("confidence", profile.get("confidence"));
+        Map<String, Object> signals = mapFromObject(profile.get("signals"));
+        if (!signals.isEmpty()) {
+            Map<String, Object> compactSignals = new LinkedHashMap<>();
+            compactSignals.put("chunkCount", valueOrDefault(signals.get("chunkCount"), 0));
+            compactSignals.put("knowledgeUnitCount", valueOrDefault(signals.get("knowledgeUnitCount"), 0));
+            compactSignals.put("tableRatio", valueOrDefault(signals.get("tableRatio"), 0));
+            compactSignals.put("headingRatio", valueOrDefault(signals.get("headingRatio"), 0));
+            compactSignals.put("numericDensity", valueOrDefault(signals.get("numericDensity"), 0));
+            compactSignals.put("sectionSamples", stringList(signals.get("sectionSamples")).stream().limit(12).toList());
+            compact.put("signals", compactSignals);
+        }
+        return compact;
+    }
+
+    private Object valueOrDefault(Object value, Object fallback) {
+        return value == null ? fallback : value;
+    }
+
+    private String documentProfileInstruction(String extractionProfile, Map<String, Object> document) {
+        Map<String, Object> profile = compactDocumentProfile(document);
+        String strategy = stringValue(profile.get("recommendedStrategy"));
+        String profileName = extractionProfile == null || extractionProfile.isBlank() ? "default" : extractionProfile;
+        String base = "文档画像路由：profile=" + profileName
+                + "，docType=" + stringValue(profile.get("docType"))
+                + "，structureType=" + stringValue(profile.get("structureType"))
+                + "，graphSuitability=" + stringValue(profile.get("graphSuitability"))
+                + "。";
+        return switch (strategy) {
+            case "paper_extraction" -> base + "论文类文档优先抽研究对象、方法/算法、实验对象、结论、数据集、作者/单位等明确事实；不要把参考文献条目和章节标题当实体关系。";
+            case "regulation_extraction" -> base + "规章制度优先抽适用对象、责任主体、约束条款、生效时间、禁止/要求事项；条款编号和普通字段名不要作为实体。";
+            case "project_extraction" -> base + "项目/方案优先抽系统、模块、建设内容、应用单位、指标、阶段演化和验收要求；数值指标优先作为属性事实。";
+            case "speech_summary" -> base + "讲话稿优先抽主题、观点、任务部署、时间背景和涉及组织；弱化硬实体关系，不要把并列口号强行连边。";
+            case "table_attribute_first" -> base + "表格型文档优先抽指标、字段含义、统计对象和值；金额、数量、序号、备注等默认作为属性或证据，不作为独立实体。";
+            case "technical_spec_extraction" -> base + "技术规范优先抽接口、模块、架构、约束、性能、安全和依赖关系；响应时间、吞吐、版本等优先作为属性事实。";
+            case "report_extraction" -> base + "报告类文档优先抽问题、原因、建议、结论、对象和证据指标；不要把长标题直接作为领域实体。";
+            case "evidence_only" -> base + "该文档建图适配度较弱，只抽原文直接表达且高置信的事实；无法确认关系时返回空 triples。";
+            default -> base + "按通用业务文档处理，优先抽稳定实体和明确事实，避免标题/目录噪声。";
+        };
     }
 
     private List<Map<String, Object>> unitsPromptContext(List<Map<String, Object>> units) {
@@ -2296,6 +2357,23 @@ public class KnowledgeGraphExtractionService {
                 : config.extractionProfile().trim().toLowerCase(Locale.ROOT);
         if (!"auto".equals(configured)) {
             return configured;
+        }
+        Map<String, Object> metadata = mapFromObject(document.get("metadata"));
+        Map<String, Object> profile = mapFromObject(metadata.get("documentProfile"));
+        String strategy = stringValue(profile.get("recommendedStrategy"));
+        String routed = switch (strategy) {
+            case "paper_extraction" -> "paper";
+            case "regulation_extraction" -> "policy";
+            case "project_extraction" -> "project";
+            case "speech_summary" -> "speech";
+            case "table_attribute_first" -> "table";
+            case "technical_spec_extraction" -> "technical_spec";
+            case "report_extraction" -> "report";
+            case "evidence_only" -> "evidence_only";
+            default -> "";
+        };
+        if (!routed.isBlank()) {
+            return routed;
         }
         String haystack = (stringValue(document.get("docType")) + " " + stringValue(document.get("title")) + " "
                 + stringValue(document.get("sourceFilename"))).toLowerCase(Locale.ROOT);

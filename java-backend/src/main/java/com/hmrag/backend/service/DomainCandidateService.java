@@ -42,6 +42,7 @@ public class DomainCandidateService {
     private final DomainCandidateRepository domainCandidateRepository;
     private final DomainDefinitionRepository domainDefinitionRepository;
     private final DomainRefineJobService domainRefineJobService;
+    private final KnowledgeGraphStoreClient knowledgeGraphStoreClient;
     private final NamedParameterJdbcTemplate namedParameterJdbcTemplate;
     private final AppProperties appProperties;
     private final ObjectMapper objectMapper;
@@ -50,6 +51,7 @@ public class DomainCandidateService {
             DomainCandidateRepository domainCandidateRepository,
             DomainDefinitionRepository domainDefinitionRepository,
             DomainRefineJobService domainRefineJobService,
+            KnowledgeGraphStoreClient knowledgeGraphStoreClient,
             NamedParameterJdbcTemplate namedParameterJdbcTemplate,
             AppProperties appProperties,
             ObjectMapper objectMapper
@@ -57,6 +59,7 @@ public class DomainCandidateService {
         this.domainCandidateRepository = domainCandidateRepository;
         this.domainDefinitionRepository = domainDefinitionRepository;
         this.domainRefineJobService = domainRefineJobService;
+        this.knowledgeGraphStoreClient = knowledgeGraphStoreClient;
         this.namedParameterJdbcTemplate = namedParameterJdbcTemplate;
         this.appProperties = appProperties;
         this.objectMapper = objectMapper;
@@ -82,11 +85,22 @@ public class DomainCandidateService {
         List<String> existingDomainNames = loadExistingDomainNames();
         List<String> blockedCandidateNames = loadBlockedCandidateNames();
         List<Map<String, Object>> recentSignals = loadRecentIndexedSignals(windowStart, windowEnd, settings.maxDocuments());
-        List<Map<String, Object>> clusterSeeds = buildClusterSeeds(windowStart, windowEnd, recentSignals, existingDomainNames, blockedCandidateNames, settings);
+        GraphDiscoveryContext graphContext = loadGraphDiscoveryContext(settings.maxCandidates(), existingDomainNames, blockedCandidateNames);
+        List<Map<String, Object>> discoverySignals = new ArrayList<>(recentSignals);
+        discoverySignals.addAll(graphContext.signals());
+        List<Map<String, Object>> clusterSeeds = buildClusterSeeds(
+                windowStart,
+                windowEnd,
+                recentSignals,
+                graphContext.seeds(),
+                existingDomainNames,
+                blockedCandidateNames,
+                settings
+        );
         if (recentSignals.size() < settings.minDocuments() && clusterSeeds.isEmpty()) {
             return List.of();
         }
-        List<SuggestedCandidate> suggestions = suggestCandidates(recentSignals, clusterSeeds, settings.maxCandidates(), existingDomainNames, blockedCandidateNames);
+        List<SuggestedCandidate> suggestions = suggestCandidates(discoverySignals, clusterSeeds, settings.maxCandidates(), existingDomainNames, blockedCandidateNames);
         List<ApiDtos.DomainCandidateItem> created = new ArrayList<>();
         for (SuggestedCandidate suggestion : suggestions) {
             String normalizedName = trimToNull(suggestion.name());
@@ -106,8 +120,8 @@ public class DomainCandidateService {
             candidate.setName(normalizedName);
             candidate.setDescription(trimToNull(suggestion.description()));
             candidate.setKeywordsJson(copyList(suggestion.keywords()));
-            candidate.setEvidenceRefsJson(resolveEvidenceRefs(suggestion.supportingTitles(), recentSignals));
-            candidate.setSourceSnapshotJson(buildSnapshot(windowStart, windowEnd, recentSignals, clusterSeeds, suggestion, settings.triggerSource()));
+            candidate.setEvidenceRefsJson(resolveEvidenceRefs(suggestion.supportingTitles(), discoverySignals));
+            candidate.setSourceSnapshotJson(buildSnapshot(windowStart, windowEnd, discoverySignals, clusterSeeds, suggestion, settings.triggerSource()));
             candidate.setStatus("suggested");
             candidate.setTriggerSource(settings.triggerSource());
             candidate.setDiscoveryWindowStart(windowStart);
@@ -333,6 +347,7 @@ public class DomainCandidateService {
             OffsetDateTime windowStart,
             OffsetDateTime windowEnd,
             List<Map<String, Object>> recentSignals,
+            List<Map<String, Object>> graphSeeds,
             List<String> existingDomainNames,
             List<String> blockedCandidateNames,
             DiscoverySettings settings
@@ -340,9 +355,138 @@ public class DomainCandidateService {
         List<Map<String, Object>> seeds = new ArrayList<>();
         seeds.addAll(loadKnowledgeUnitFacetSeeds(windowStart, windowEnd, settings.maxDocuments(), settings.knowledgeUnitFacetLimit()));
         seeds.addAll(buildChunkTopicSeeds(recentSignals, settings.chunkTopicLimit()));
+        seeds.addAll(graphSeeds == null ? List.of() : graphSeeds);
         List<String> blockedNames = new ArrayList<>(existingDomainNames);
         blockedNames.addAll(blockedCandidateNames);
         return deduplicateClusterSeeds(seeds, blockedNames);
+    }
+
+    private GraphDiscoveryContext loadGraphDiscoveryContext(
+            int maxCandidates,
+            List<String> existingDomainNames,
+            List<String> blockedCandidateNames
+    ) {
+        if (knowledgeGraphStoreClient == null || !knowledgeGraphStoreClient.isConfigured()) {
+            return GraphDiscoveryContext.empty();
+        }
+        try {
+            int targetEntities = Math.max(20, Math.min(80, maxCandidates * 12));
+            Map<String, Object> graph = knowledgeGraphStoreClient.readTopConnectedGraphView(targetEntities);
+            List<Map<String, Object>> nodes = toObjectList(graph.get("nodes"));
+            List<Map<String, Object>> edges = toObjectList(graph.get("edges"));
+            List<Map<String, Object>> topEntities = toObjectList(graph.get("topEntities"));
+            Map<String, String> labelsById = new LinkedHashMap<>();
+            for (Map<String, Object> node : nodes) {
+                String id = trimToNull(stringValue(node.get("id")));
+                String label = trimToNull(stringValue(node.get("label")));
+                if (id != null && label != null) {
+                    labelsById.put(id, label);
+                }
+            }
+            Map<String, List<Map<String, Object>>> edgesByEntity = new LinkedHashMap<>();
+            for (Map<String, Object> edge : edges) {
+                String source = trimToNull(stringValue(edge.get("source")));
+                String target = trimToNull(stringValue(edge.get("target")));
+                if (source != null) {
+                    edgesByEntity.computeIfAbsent(source, ignored -> new ArrayList<>()).add(edge);
+                }
+                if (target != null) {
+                    edgesByEntity.computeIfAbsent(target, ignored -> new ArrayList<>()).add(edge);
+                }
+            }
+
+            List<String> blockedNames = new ArrayList<>(existingDomainNames);
+            blockedNames.addAll(blockedCandidateNames);
+            List<Map<String, Object>> seeds = new ArrayList<>();
+            List<Map<String, Object>> signals = new ArrayList<>();
+            for (Map<String, Object> entity : topEntities) {
+                String entityId = trimToNull(stringValue(entity.get("id")));
+                String rawName = firstNonBlank(
+                        trimToNull(stringValue(entity.get("clusterName"))),
+                        trimToNull(stringValue(entity.get("label")))
+                );
+                String name = normalizeCandidateName(rawName);
+                if (entityId == null
+                        || name == null
+                        || !isCandidateDomainTermForSeed(name, Map.of("clusterType", "graph_top_connected_entity"))
+                        || matchesExistingDomain(name, blockedNames)) {
+                    continue;
+                }
+                int relationCount = intValue(entity.get("factCount"));
+                if (relationCount <= 0) {
+                    continue;
+                }
+                Map<String, Object> seed = toSeed(
+                        "graph_top_connected_entity",
+                        stringValue(entity.get("type")),
+                        name,
+                        relationCount,
+                        parseObservedAt(entity.get("updatedAt"))
+                );
+                seed.put("entityId", entityId);
+                seed.put("entityType", stringValue(entity.get("type")));
+                seed.put("stateCount", intValue(entity.get("stateCount")));
+                seed.put("transitionCount", intValue(entity.get("transitionCount")));
+                seed.put("clusterName", trimToNull(stringValue(entity.get("clusterName"))));
+                seeds.add(seed);
+
+                List<Map<String, Object>> entityEdges = edgesByEntity.getOrDefault(entityId, List.of());
+                signals.add(graphEntitySignal(entity, name, labelsById, entityEdges));
+                if (seeds.size() >= targetEntities) {
+                    break;
+                }
+            }
+            return new GraphDiscoveryContext(seeds, signals);
+        } catch (Exception ignored) {
+            return GraphDiscoveryContext.empty();
+        }
+    }
+
+    private Map<String, Object> graphEntitySignal(
+            Map<String, Object> entity,
+            String name,
+            Map<String, String> labelsById,
+            List<Map<String, Object>> edges
+    ) {
+        String entityId = trimToNull(stringValue(entity.get("id")));
+        List<String> relationSamples = new ArrayList<>();
+        List<String> docRefs = new ArrayList<>();
+        for (Map<String, Object> edge : edges == null ? List.<Map<String, Object>>of() : edges) {
+            String source = trimToNull(stringValue(edge.get("source")));
+            String target = trimToNull(stringValue(edge.get("target")));
+            String otherId = entityId != null && entityId.equals(source) ? target : source;
+            String otherLabel = labelsById.getOrDefault(otherId, otherId == null ? "" : otherId);
+            String relation = firstNonBlank(trimToNull(stringValue(edge.get("type"))), trimToNull(stringValue(edge.get("label"))), "相关");
+            if (otherLabel != null && !otherLabel.isBlank()) {
+                relationSamples.add(relation + " " + otherLabel);
+            }
+            for (String docId : toStringList(edge.get("docIds"))) {
+                docRefs.add("document:" + docId);
+            }
+            if (relationSamples.size() >= 8) {
+                break;
+            }
+        }
+        String text = name + " " + stringValue(entity.get("type"))
+                + " 关系数 " + stringValue(entity.get("factCount"))
+                + " 状态数 " + stringValue(entity.get("stateCount"))
+                + " 演化数 " + stringValue(entity.get("transitionCount"))
+                + " 关联 " + String.join("；", relationSamples);
+        Map<String, Object> signal = new LinkedHashMap<>();
+        signal.put("evidenceRef", entityId == null ? "graph_entity:" + name : "graph_entity:" + entityId);
+        signal.put("signalType", "graph_entity");
+        signal.put("title", name);
+        signal.put("text", shortenForPrompt(text, 1200));
+        signal.put("sourcePath", "knowledge_graph");
+        signal.put("observedAt", trimToNull(stringValue(entity.get("updatedAt"))));
+        signal.put("graphEntityId", entityId);
+        signal.put("entityType", stringValue(entity.get("type")));
+        signal.put("relationCount", intValue(entity.get("factCount")));
+        signal.put("stateCount", intValue(entity.get("stateCount")));
+        signal.put("transitionCount", intValue(entity.get("transitionCount")));
+        signal.put("relationSamples", relationSamples);
+        signal.put("documentEvidenceRefs", docRefs.stream().distinct().limit(8).toList());
+        return signal;
     }
 
     private List<Map<String, Object>> loadKnowledgeUnitFacetSeeds(OffsetDateTime windowStart, OffsetDateTime windowEnd, int maxDocuments, int facetLimit) {
@@ -439,7 +583,7 @@ public class DomainCandidateService {
         Set<String> seen = new LinkedHashSet<>();
         for (Map<String, Object> seed : seeds) {
             String term = trimToNull(stringValue(seed.get("term")));
-            if (term == null || !isCandidateDomainTerm(term) || matchesExistingDomain(term, existingDomainNames)) {
+            if (term == null || !isCandidateDomainTermForSeed(term, seed) || matchesExistingDomain(term, existingDomainNames)) {
                 continue;
             }
             String normalized = normalizeDomainName(term);
@@ -502,7 +646,7 @@ public class DomainCandidateService {
             List<SuggestedCandidate> filtered = result.stream()
                     .map(this::normalizeSuggestedCandidate)
                     .filter(item -> item.name() != null)
-                    .filter(item -> isCandidateDomainTerm(item.name()))
+                    .filter(item -> isCandidateDomainTerm(item.name()) || matchesGraphSeedTerm(item.name(), clusterSeeds))
                     .filter(item -> !matchesExistingDomain(item.name(), blockedNames))
                     .limit(maxCandidates)
                     .toList();
@@ -521,7 +665,7 @@ public class DomainCandidateService {
         Map<String, List<Map<String, Object>>> groups = new LinkedHashMap<>();
         for (Map<String, Object> seed : clusterSeeds) {
             String term = normalizeCandidateName(trimToNull(stringValue(seed.get("term"))));
-            if (term == null || !isCandidateDomainTerm(term) || matchesExistingDomain(term, existingDomainNames)) {
+            if (term == null || !isCandidateDomainTermForSeed(term, seed) || matchesExistingDomain(term, existingDomainNames)) {
                 continue;
             }
             groups.putIfAbsent(term, matchingSignals(term, recentSignals));
@@ -529,9 +673,13 @@ public class DomainCandidateService {
         List<SuggestedCandidate> result = new ArrayList<>();
         for (Map.Entry<String, List<Map<String, Object>>> entry : groups.entrySet()) {
             List<Map<String, Object>> items = entry.getValue();
+            Map<String, Object> seed = clusterSeeds.stream()
+                    .filter(item -> entry.getKey().equals(normalizeCandidateName(trimToNull(stringValue(item.get("term"))))))
+                    .findFirst()
+                    .orElse(Map.of());
             result.add(new SuggestedCandidate(
                     entry.getKey(),
-                    "基于 knowledge_units 结构化字段与 chunks 主题联合归纳的候选领域",
+                    discoveryDescriptionForSeed(seed),
                     buildFallbackKeywords(items),
                     items.stream().map(this::signalLabel).distinct().limit(4).toList()
             ));
@@ -585,7 +733,8 @@ public class DomainCandidateService {
             List<String> existingDomainNames
     ) {
         StringBuilder builder = new StringBuilder();
-        builder.append("你是一个领域发现器。请根据最近一段时间内已完成索引的 knowledge_units 结构化字段聚类结果，结合 chunk 文本样本，归纳候选领域。\n");
+        builder.append("你是一个领域发现器。请根据最近一段时间内已完成索引的 knowledge_units 结构化字段聚类结果、chunk 文本样本，以及知识图谱中的高连接实体，归纳候选领域。\n");
+        builder.append("知识图谱高连接实体表示当前资料中关系最多、最适合作为探索入口的实体；它可以作为候选领域，但仍要结合证据样本判断是否稳定。\n");
         builder.append("这些候选领域只进入人工确认池，不直接精炼。\n");
         if (!existingDomainNames.isEmpty()) {
             builder.append("以下正式领域或已拒绝候选已经存在，绝对不要重复产出或仅做近义改写：\n");
@@ -598,7 +747,7 @@ public class DomainCandidateService {
         builder.append("要求：\n");
         builder.append("1. 输出 1 到 ").append(maxCandidates).append(" 个候选领域。\n");
         builder.append("2. name 必须是可长期维护的领域名称，建议 4 到 18 个汉字，不要过长。\n");
-        builder.append("3. 必须综合多条 subject/action/organization/indicator 聚类线索，不能只改写单个标题或单个片段。\n");
+        builder.append("3. 必须综合多条 subject/action/organization/indicator 聚类线索、图谱关系线索，不能只改写单个标题或单个片段。\n");
         builder.append("3.1 严禁把文章题目、章节题目、论文题名、报告题名、通知标题直接当作候选领域名称。\n");
         builder.append("4. 不要输出“全文检索”“知识库”这种系统性词语。\n");
         builder.append("5. 不要直接产出正式领域，只产出候选领域。\n");
@@ -614,7 +763,16 @@ public class DomainCandidateService {
                     .append(stringValue(seed.get("term")))
                     .append(" (count=")
                     .append(stringValue(seed.get("signalCount")))
-                    .append(")\n");
+                    .append(")");
+            if ("graph_top_connected_entity".equals(stringValue(seed.get("clusterType")))) {
+                builder.append(" entityType=")
+                        .append(stringValue(seed.get("entityType")))
+                        .append(" states=")
+                        .append(stringValue(seed.get("stateCount")))
+                        .append(" transitions=")
+                        .append(stringValue(seed.get("transitionCount")));
+            }
+            builder.append("\n");
             clusterCount++;
             if (clusterCount >= 48) {
                 break;
@@ -744,6 +902,9 @@ public class DomainCandidateService {
         snapshot.put("windowEnd", windowEnd.toString());
         snapshot.put("signalCount", recentSignals.size());
         snapshot.put("clusterSeedCount", clusterSeeds.size());
+        snapshot.put("graphEntitySeedCount", clusterSeeds.stream()
+                .filter(seed -> "graph_top_connected_entity".equals(stringValue(seed.get("clusterType"))))
+                .count());
         snapshot.put("triggerSource", triggerSource);
         snapshot.put("supportingTitles", copyList(suggestion.supportingTitles()));
         snapshot.put("sampleClusterSeeds", clusterSeeds.stream().limit(8).toList());
@@ -1068,7 +1229,9 @@ public class DomainCandidateService {
     private List<String> buildFallbackKeywords(List<Map<String, Object>> items) {
         List<String> result = new ArrayList<>();
         for (Map<String, Object> item : items) {
-            String text = firstMeaningfulSegment(trimToNull(stringValue(item.get("text"))), 18);
+            String text = "graph_entity".equals(stringValue(item.get("signalType")))
+                    ? trimToNull(stringValue(item.get("title")))
+                    : firstMeaningfulSegment(trimToNull(stringValue(item.get("text"))), 18);
             if (text != null) {
                 result.add(text);
             }
@@ -1082,6 +1245,111 @@ public class DomainCandidateService {
                 .distinct()
                 .limit(5)
                 .toList();
+    }
+
+    private String discoveryDescriptionForSeed(Map<String, Object> seed) {
+        String type = stringValue(seed == null ? null : seed.get("clusterType"));
+        if ("graph_top_connected_entity".equals(type)) {
+            return "基于知识图谱高连接实体及其关系网络发现的候选领域";
+        }
+        return "基于 knowledge_units 结构化字段与 chunks 主题联合归纳的候选领域";
+    }
+
+    private boolean isCandidateDomainTermForSeed(String value, Map<String, Object> seed) {
+        if (isCandidateDomainTerm(value)) {
+            return true;
+        }
+        if (!"graph_top_connected_entity".equals(stringValue(seed == null ? null : seed.get("clusterType")))) {
+            return false;
+        }
+        String normalized = normalizeCandidateName(value);
+        if (normalized == null || isGenericDomainTerm(normalized) || isArticleLikeTitle(normalized)) {
+            return false;
+        }
+        int length = normalized.codePointCount(0, normalized.length());
+        if (length < 2 || length > 18) {
+            return false;
+        }
+        String lower = normalized.toLowerCase(Locale.ROOT);
+        return !lower.matches(".*(\\.pdf|\\.docx?|\\.xlsx?|\\.pptx?|\\.md|\\.txt).*")
+                && !lower.contains("附件")
+                && !lower.contains("目录")
+                && !lower.contains("http")
+                && !lower.contains("www");
+    }
+
+    private boolean matchesGraphSeedTerm(String candidateName, List<Map<String, Object>> clusterSeeds) {
+        String normalizedCandidate = normalizeDomainName(candidateName);
+        if (normalizedCandidate.isEmpty()) {
+            return false;
+        }
+        for (Map<String, Object> seed : clusterSeeds == null ? List.<Map<String, Object>>of() : clusterSeeds) {
+            if (!"graph_top_connected_entity".equals(stringValue(seed.get("clusterType")))) {
+                continue;
+            }
+            String normalizedSeed = normalizeDomainName(stringValue(seed.get("term")));
+            if (!normalizedSeed.isEmpty()
+                    && (normalizedCandidate.equals(normalizedSeed)
+                    || normalizedCandidate.contains(normalizedSeed)
+                    || normalizedSeed.contains(normalizedCandidate))) {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    private String firstNonBlank(String... values) {
+        for (String value : values) {
+            String trimmed = trimToNull(value);
+            if (trimmed != null) {
+                return trimmed;
+            }
+        }
+        return "";
+    }
+
+    @SuppressWarnings("unchecked")
+    private List<Map<String, Object>> toObjectList(Object value) {
+        if (!(value instanceof List<?> list)) {
+            return List.of();
+        }
+        List<Map<String, Object>> result = new ArrayList<>();
+        for (Object item : list) {
+            if (item instanceof Map<?, ?> map) {
+                Map<String, Object> converted = new LinkedHashMap<>();
+                map.forEach((key, mapValue) -> {
+                    if (key != null) {
+                        converted.put(String.valueOf(key), mapValue);
+                    }
+                });
+                result.add(converted);
+            }
+        }
+        return result;
+    }
+
+    private int intValue(Object value) {
+        if (value instanceof Number number) {
+            return number.intValue();
+        }
+        String text = trimToNull(value == null ? null : String.valueOf(value));
+        if (text == null) {
+            return 0;
+        }
+        try {
+            return Integer.parseInt(text);
+        } catch (NumberFormatException ex) {
+            return 0;
+        }
+    }
+
+    private record GraphDiscoveryContext(
+            List<Map<String, Object>> seeds,
+            List<Map<String, Object>> signals
+    ) {
+        static GraphDiscoveryContext empty() {
+            return new GraphDiscoveryContext(List.of(), List.of());
+        }
     }
 
     private record SuggestedCandidate(

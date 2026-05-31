@@ -20,6 +20,7 @@ class DomainCandidateServiceTest {
                 null,
                 null,
                 null,
+                null,
                 new ObjectMapper()
         );
         Method method = DomainCandidateService.class.getDeclaredMethod("isCandidateDomainTerm", String.class);
@@ -40,6 +41,7 @@ class DomainCandidateServiceTest {
                 null,
                 null,
                 null,
+                null,
                 new ObjectMapper()
         );
         Method method = DomainCandidateService.class.getDeclaredMethod("normalizeCandidateName", String.class);
@@ -53,6 +55,7 @@ class DomainCandidateServiceTest {
     @SuppressWarnings("unchecked")
     void fallbackDoesNotUseTitlesOrBlockedCandidatesAsDomains() throws Exception {
         DomainCandidateService service = new DomainCandidateService(
+                null,
                 null,
                 null,
                 null,
@@ -94,5 +97,48 @@ class DomainCandidateServiceTest {
                 List.of("研究生教育管理")
         );
         assertThat(blockedResult).isEmpty();
+    }
+
+    @Test
+    @SuppressWarnings("unchecked")
+    void fallbackCanUseShortHighConnectedGraphEntityAsDomain() throws Exception {
+        DomainCandidateService service = new DomainCandidateService(
+                null,
+                null,
+                null,
+                null,
+                null,
+                null,
+                new ObjectMapper()
+        );
+        Method method = DomainCandidateService.class.getDeclaredMethod(
+                "fallbackCandidates",
+                List.class,
+                List.class,
+                int.class,
+                List.class
+        );
+        method.setAccessible(true);
+
+        List<Map<String, Object>> signals = List.of(Map.of(
+                "signalType", "graph_entity",
+                "title", "物联网",
+                "text", "物联网 关系数 23 关联 边缘计算；传感器网络；智慧校园",
+                "evidenceRef", "graph_entity:iot"
+        ));
+        List<Map<String, Object>> seeds = List.of(Map.of(
+                "clusterType", "graph_top_connected_entity",
+                "facet", "Technology",
+                "term", "物联网",
+                "signalCount", 23
+        ));
+
+        List<?> result = (List<?>) method.invoke(service, signals, seeds, 5, List.of());
+
+        assertThat(result).hasSize(1);
+        Object item = result.get(0);
+        Method nameMethod = item.getClass().getDeclaredMethod("name");
+        nameMethod.setAccessible(true);
+        assertThat((String) nameMethod.invoke(item)).isEqualTo("物联网");
     }
 }

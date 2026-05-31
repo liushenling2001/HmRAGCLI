@@ -131,6 +131,14 @@ class DomainKnowledgeRefinementServiceTest {
                             "chunks", List.of(Map.of(
                                     "evidenceRef", "chunk:chunk-1",
                                     "snippetPreview", "平台用于研究生教育知识管理"
+                            )),
+                            "graphFacts", List.of(Map.of(
+                                    "evidenceRef", "graph_fact:fact-1",
+                                    "subject", "研究生教育知识智能管理平台",
+                                    "relationType", "支撑",
+                                    "object", "研究生教育知识管理",
+                                    "statement", "研究生教育知识智能管理平台支撑研究生教育知识管理",
+                                    "confidence", 0.91
                             ))
                     )
             );
@@ -139,6 +147,8 @@ class DomainKnowledgeRefinementServiceTest {
             assertThat(result.evidenceRefs()).containsExactly("knowledge_unit:ku-1", "chunk:chunk-1");
             assertThat(capturedBody.get()).contains("\"max_tokens\":16000");
             assertThat(capturedBody.get()).contains("证据组");
+            assertThat(capturedBody.get()).contains("graphFacts");
+            assertThat(capturedBody.get()).contains("graph_fact:fact-1");
             assertThat(capturedBody.get().length()).isLessThan(5000);
         } finally {
             server.stop(0);
