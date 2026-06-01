@@ -170,6 +170,28 @@ class KnowledgeGraphExtractionServiceTest {
 
     @Test
     @SuppressWarnings("unchecked")
+    void parserEscapesBareNewlinesInsideStringValues() throws Exception {
+        String raw = """
+                {"entities": [
+                  {"mentionId":"e1","name":"招生报名比","type":"Indicator","chunkId":"c1"}
+                ], "triples": [
+                  {"subject":"招生报名比","predicate":"数值为","object":"1:2.06","objectType":"Other","chunkId":"c1","statement":"2017年总体招生报名比为1:2.06。
+                该指标来自同一段落。"}
+                ], "facts": [], "relations": [], "attributes": [], "events": []}
+                """;
+
+        Map<String, Object> parsed = (Map<String, Object>) invoke("parseJsonObject",
+                new Class<?>[]{String.class},
+                raw
+        );
+
+        List<Map<String, Object>> triples = (List<Map<String, Object>>) parsed.get("triples");
+        assertThat(triples).hasSize(1);
+        assertThat((String) triples.getFirst().get("statement")).contains("同一段落");
+    }
+
+    @Test
+    @SuppressWarnings("unchecked")
     void parserRepairsExtraObjectAndArrayClosureBeforeTriples() throws Exception {
         String raw = """
                 {"entities": [

@@ -31,6 +31,11 @@ public class KnowledgeGraphController {
         return knowledgeGraphBuildService.listJobs(status, limit);
     }
 
+    @GetMapping("/build-jobs/overview")
+    public Map<String, Object> buildJobOverview(@RequestParam(required = false) UUID dataSourceId) {
+        return knowledgeGraphBuildService.buildJobOverview(dataSourceId);
+    }
+
     @GetMapping("/runtime-settings")
     public Map<String, Object> runtimeSettings() {
         return knowledgeGraphBuildService.runtimeSettings();

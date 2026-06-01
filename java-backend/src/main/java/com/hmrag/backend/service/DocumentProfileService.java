@@ -56,6 +56,128 @@ public class DocumentProfileService {
         return profile;
     }
 
+    public Map<String, Object> backfillMissingProfiles(int limit) {
+        if (jdbcTemplate == null) {
+            return Map.of(
+                    "requestedLimit", limit,
+                    "selected", 0,
+                    "succeeded", 0,
+                    "failed", 0,
+                    "remainingMissing", 0,
+                    "errors", List.of()
+            );
+        }
+        int safeLimit = Math.max(1, Math.min(limit, 5000));
+        List<UUID> docIds = jdbcTemplate.query(
+                """
+                SELECT d.id
+                FROM documents d
+                WHERE NOT jsonb_exists(d.metadata_json, 'documentProfile')
+                  AND d.parse_status = 'success'
+                  AND EXISTS (
+                      SELECT 1
+                      FROM chunks c
+                      WHERE c.doc_id = d.id
+                  )
+                ORDER BY d.updated_at DESC, d.created_at DESC
+                LIMIT :limit
+                """,
+                new MapSqlParameterSource("limit", safeLimit),
+                (rs, rowNum) -> UUID.fromString(rs.getString("id"))
+        );
+
+        int succeeded = 0;
+        List<Map<String, Object>> errors = new ArrayList<>();
+        Map<String, Integer> docTypes = new LinkedHashMap<>();
+        Map<String, Integer> strategies = new LinkedHashMap<>();
+        for (UUID docId : docIds) {
+            try {
+                Map<String, Object> profile = refreshProfile(docId);
+                succeeded++;
+                increment(docTypes, stringValue(profile.get("docType")));
+                increment(strategies, stringValue(profile.get("recommendedStrategy")));
+            } catch (Exception ex) {
+                if (errors.size() < 20) {
+                    Map<String, Object> error = new LinkedHashMap<>();
+                    error.put("docId", docId.toString());
+                    error.put("message", truncate(ex.getMessage(), 500));
+                    errors.add(error);
+                }
+            }
+        }
+
+        long remainingMissing = countMissingProfiles();
+        Map<String, Object> result = new LinkedHashMap<>();
+        result.put("requestedLimit", safeLimit);
+        result.put("selected", docIds.size());
+        result.put("succeeded", succeeded);
+        result.put("failed", Math.max(0, docIds.size() - succeeded));
+        result.put("remainingMissing", remainingMissing);
+        result.put("docTypes", docTypes);
+        result.put("recommendedStrategies", strategies);
+        result.put("errors", errors);
+        result.putAll(profileStats());
+        return result;
+    }
+
+    public Map<String, Object> profileStats() {
+        if (jdbcTemplate == null) {
+            return Map.of(
+                    "eligibleDocuments", 0L,
+                    "profiledDocuments", 0L,
+                    "missingProfiles", 0L
+            );
+        }
+        Map<String, Object> stats = jdbcTemplate.queryForMap(
+                """
+                SELECT
+                    count(*) FILTER (
+                        WHERE d.parse_status = 'success'
+                          AND EXISTS (SELECT 1 FROM chunks c WHERE c.doc_id = d.id)
+                    ) AS eligible_documents,
+                    count(*) FILTER (
+                        WHERE d.parse_status = 'success'
+                          AND jsonb_exists(d.metadata_json, 'documentProfile')
+                          AND EXISTS (SELECT 1 FROM chunks c WHERE c.doc_id = d.id)
+                    ) AS profiled_documents,
+                    count(*) FILTER (
+                        WHERE d.parse_status = 'success'
+                          AND NOT jsonb_exists(d.metadata_json, 'documentProfile')
+                          AND EXISTS (SELECT 1 FROM chunks c WHERE c.doc_id = d.id)
+                    ) AS missing_profiles
+                FROM documents d
+                """,
+                new MapSqlParameterSource()
+        );
+        return Map.of(
+                "eligibleDocuments", longValue(stats.get("eligible_documents")),
+                "profiledDocuments", longValue(stats.get("profiled_documents")),
+                "missingProfiles", longValue(stats.get("missing_profiles"))
+        );
+    }
+
+    public long countMissingProfiles() {
+        if (jdbcTemplate == null) {
+            return 0L;
+        }
+        Long count = jdbcTemplate.queryForObject(
+                """
+                SELECT count(*)
+                FROM documents d
+                WHERE NOT jsonb_exists(d.metadata_json, 'documentProfile')
+                  AND d.parse_status = 'success'
+                  AND EXISTS (
+                      SELECT 1
+                      FROM chunks c
+                      WHERE c.doc_id = d.id
+                  )
+                """,
+                new MapSqlParameterSource(),
+                Long.class
+        );
+        return count == null ? 0L : count;
+    }
+
     public Map<String, Object> buildProfile(
             Map<String, Object> document,
             List<Map<String, Object>> chunks,
@@ -396,6 +518,14 @@ public class DocumentProfileService {
         return score;
     }
 
+    private void increment(Map<String, Integer> values, String key) {
+        String normalized = trimToNull(key);
+        if (normalized == null) {
+            normalized = "unknown";
+        }
+        values.merge(normalized, 1, Integer::sum);
+    }
+
     private void appendText(StringBuilder builder, Object value) {
         String text = trimToNull(stringValue(value));
         if (text != null) {
@@ -434,6 +564,21 @@ public class DocumentProfileService {
             return Integer.parseInt(text);
         } catch (NumberFormatException ex) {
             return 0;
+        }
+    }
+
+    private long longValue(Object value) {
+        if (value instanceof Number number) {
+            return number.longValue();
+        }
+        String text = trimToNull(value == null ? null : String.valueOf(value));
+        if (text == null) {
+            return 0L;
+        }
+        try {
+            return Long.parseLong(text);
+        } catch (NumberFormatException ex) {
+            return 0L;
         }
     }
 

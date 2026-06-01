@@ -128,7 +128,13 @@ public class KnowledgeGraphExtractionService {
                         log.info("Knowledge graph LLM extraction request succeeded: docId={}, sourceFileId={}, batch={}/{}, elapsedMs={}, responseChars={}",
                                 docId, sourceFileId, batchNo, batchCount, elapsedMillis(llmStartedAt), raw == null ? 0 : raw.length());
                         markExtractionAttemptRawResponse(attemptId, raw);
-                        Map<String, Object> extracted = parseJsonObject(raw);
+                        Map<String, Object> extracted;
+                        try {
+                            extracted = parseJsonObject(raw);
+                        } catch (Exception parseEx) {
+                            logExtractionParseFailure(docId, sourceFileId, batchNo, batchCount, raw, parseEx);
+                            throw parseEx;
+                        }
                         Map<String, String> mentionIdMap = new LinkedHashMap<>();
                         List<Map<String, Object>> rawEntities = listOfMaps(extracted.get("entities"));
                         List<Map<String, Object>> rawRelations = listOfMaps(extracted.get("relations"));
@@ -149,8 +155,9 @@ public class KnowledgeGraphExtractionService {
                         markExtractionBatchSuccess(batchId, batchEntities.size(), batchFacts.size(), batchFacts.stream().filter(this::isRelationFact).count());
                         publishProgress(progressCallback, batchNo, batchCount, batchChunks.size(), "success", null);
                     } catch (Exception batchEx) {
-                        log.warn("Knowledge graph LLM extraction request failed: docId={}, sourceFileId={}, batch={}/{}, elapsedMs={}, error={}",
-                                docId, sourceFileId, batchNo, batchCount, elapsedMillis(llmStartedAt), batchEx.getMessage());
+                        log.error("Knowledge graph LLM extraction batch failed: docId={}, sourceFileId={}, batch={}/{}, status={}, elapsedMs={}, error={}",
+                                docId, sourceFileId, batchNo, batchCount, parseFailure(batchEx) ? "parse_failed" : "failed",
+                                elapsedMillis(llmStartedAt), batchEx.getMessage(), batchEx);
                         markExtractionAttemptFailed(attemptId, batchEx);
                         markExtractionBatchFailed(batchId, batchEx);
                         publishProgress(progressCallback, batchNo, batchCount, batchChunks.size(), "failed", batchEx.getMessage());
@@ -1321,7 +1328,7 @@ public class KnowledgeGraphExtractionService {
     ) {
         try {
             Map<String, Object> input = new LinkedHashMap<>();
-            input.put("promptVersion", "triple-candidate-fact-compatible-v6-document-profile-routing");
+            input.put("promptVersion", "triple-candidate-fact-compatible-v7-profile-short-rules");
             input.put("document", documentPromptContext(document));
             input.put("chunks", chunks);
             input.put("knowledgeUnits", unitsPromptContext(units));
@@ -1649,7 +1656,7 @@ public class KnowledgeGraphExtractionService {
                 当前批次：%s / %s。
                 抽取深度：%s；作用域：%s；作用域键：%s。
                 %s
-                %s
+                画像抽取要求：%s
 
                 必须返回字段：
                 {
@@ -1745,10 +1752,6 @@ public class KnowledgeGraphExtractionService {
                     "keywords", stringList(overview.get("keywords")).stream().limit(16).toList()
             ));
         }
-        Map<String, Object> documentProfile = compactDocumentProfile(document);
-        if (!documentProfile.isEmpty()) {
-            context.put("documentProfile", documentProfile);
-        }
         return context;
     }
 
@@ -1787,21 +1790,17 @@ public class KnowledgeGraphExtractionService {
         Map<String, Object> profile = compactDocumentProfile(document);
         String strategy = stringValue(profile.get("recommendedStrategy"));
         String profileName = extractionProfile == null || extractionProfile.isBlank() ? "default" : extractionProfile;
-        String base = "文档画像路由：profile=" + profileName
-                + "，docType=" + stringValue(profile.get("docType"))
-                + "，structureType=" + stringValue(profile.get("structureType"))
-                + "，graphSuitability=" + stringValue(profile.get("graphSuitability"))
-                + "。";
+        String base = "profile=" + profileName + "。";
         return switch (strategy) {
-            case "paper_extraction" -> base + "论文类文档优先抽研究对象、方法/算法、实验对象、结论、数据集、作者/单位等明确事实；不要把参考文献条目和章节标题当实体关系。";
-            case "regulation_extraction" -> base + "规章制度优先抽适用对象、责任主体、约束条款、生效时间、禁止/要求事项；条款编号和普通字段名不要作为实体。";
-            case "project_extraction" -> base + "项目/方案优先抽系统、模块、建设内容、应用单位、指标、阶段演化和验收要求；数值指标优先作为属性事实。";
-            case "speech_summary" -> base + "讲话稿优先抽主题、观点、任务部署、时间背景和涉及组织；弱化硬实体关系，不要把并列口号强行连边。";
-            case "table_attribute_first" -> base + "表格型文档优先抽指标、字段含义、统计对象和值；金额、数量、序号、备注等默认作为属性或证据，不作为独立实体。";
-            case "technical_spec_extraction" -> base + "技术规范优先抽接口、模块、架构、约束、性能、安全和依赖关系；响应时间、吞吐、版本等优先作为属性事实。";
-            case "report_extraction" -> base + "报告类文档优先抽问题、原因、建议、结论、对象和证据指标；不要把长标题直接作为领域实体。";
-            case "evidence_only" -> base + "该文档建图适配度较弱，只抽原文直接表达且高置信的事实；无法确认关系时返回空 triples。";
-            default -> base + "按通用业务文档处理，优先抽稳定实体和明确事实，避免标题/目录噪声。";
+            case "paper_extraction" -> base + "只抽论文核心事实：研究对象、方法/算法、实验对象、数据集、结果、结论、作者/单位。排除参考文献条目、页眉页脚、章节标题。";
+            case "regulation_extraction" -> base + "只抽制度核心事实：适用对象、责任主体、约束条款、生效时间、禁止/要求事项。条款编号和普通字段名不要作为实体。";
+            case "project_extraction" -> base + "只抽项目核心事实：系统/平台、模块、建设内容、应用单位、性能/验收指标、阶段变化。数值指标作为候选属性事实。";
+            case "speech_summary" -> base + "只抽讲话稿核心事实：主题、观点、任务部署、时间背景、涉及组织。不要把并列口号强行连边。";
+            case "table_attribute_first" -> base + "只抽表格核心事实：统计对象、字段含义、指标和值、约束或汇总关系。序号、备注、金额、数量默认不是独立实体。";
+            case "technical_spec_extraction" -> base + "只抽技术规范核心事实：接口、模块、架构、约束、性能、安全、依赖关系。响应时间、吞吐、版本作为候选属性事实。";
+            case "report_extraction" -> base + "只抽报告核心事实：问题、原因、建议、结论、对象、证据指标。不要把长标题直接作为领域实体。";
+            case "evidence_only" -> base + "建图适配度较弱，只抽高置信、原文直接表达的事实；无法确认关系时返回空 triples。";
+            default -> base + "只抽稳定业务实体和明确事实，避免标题、目录、来源字段和格式噪声。";
         };
     }
 
@@ -2473,18 +2472,23 @@ public class KnowledgeGraphExtractionService {
         if (first >= 0 && last > first) {
             trimmed = trimmed.substring(first, last + 1);
         }
-        trimmed = repairExtractionJsonEnvelope(trimmed);
+        trimmed = normalizeExtractionJson(trimmed);
         try {
             return objectMapper.readValue(trimmed, new TypeReference<>() {
             });
         } catch (IOException firstFailure) {
-            String repaired = repairExtractionJsonEnvelope(trimmed);
+            String repaired = normalizeExtractionJson(trimmed);
             if (!repaired.equals(trimmed)) {
                 return objectMapper.readValue(repaired, new TypeReference<>() {
                 });
             }
             throw firstFailure;
         }
+    }
+
+    private String normalizeExtractionJson(String raw) {
+        String repaired = repairExtractionJsonEnvelope(raw);
+        return escapeControlCharsInsideJsonStrings(repaired);
     }
 
     private String repairExtractionJsonEnvelope(String raw) {
@@ -2496,9 +2500,142 @@ public class KnowledgeGraphExtractionService {
             repaired = repaired.replaceAll("]\\s*}\\s*]\\s*,\\s*\"(triples|facts|relations|attributes|events)\"\\s*:", "], \"$1\":");
             repaired = repaired.replaceAll("]\\s*}\\s*,\\s*\"(triples|facts|relations|attributes|events)\"\\s*:", "], \"$1\":");
             repaired = repaired.replaceAll("]\\s*}\\s*,\\s*\\{\\s*\"(triples|facts|relations|attributes|events)\"\\s*:", "], \"$1\":");
-            repaired = repaired.replaceAll("(:\\s*-?\\d+(?:\\.\\d+)?)\"\\s*([,}])", "$1$2");
+            repaired = repairExtraQuoteAfterNumericValue(repaired);
         } while (!previous.equals(repaired));
         return repaired;
+    }
+
+    private String repairExtraQuoteAfterNumericValue(String raw) {
+        if (raw == null || raw.isEmpty()) {
+            return raw == null ? "" : raw;
+        }
+        StringBuilder out = new StringBuilder(raw.length());
+        boolean inString = false;
+        boolean escaping = false;
+        for (int i = 0; i < raw.length(); i++) {
+            char ch = raw.charAt(i);
+            if (escaping) {
+                out.append(ch);
+                escaping = false;
+                continue;
+            }
+            if (ch == '\\') {
+                out.append(ch);
+                if (inString) {
+                    escaping = true;
+                }
+                continue;
+            }
+            if (ch == '"') {
+                if (inString) {
+                    inString = false;
+                    out.append(ch);
+                    continue;
+                }
+                if (isExtraQuoteAfterNumericLiteral(raw, i)) {
+                    continue;
+                }
+                inString = true;
+                out.append(ch);
+                continue;
+            }
+            out.append(ch);
+        }
+        return out.toString();
+    }
+
+    private boolean isExtraQuoteAfterNumericLiteral(String raw, int quoteIndex) {
+        int previous = previousNonWhitespace(raw, quoteIndex - 1);
+        int next = nextNonWhitespace(raw, quoteIndex + 1);
+        if (previous < 0 || next < 0 || !Character.isDigit(raw.charAt(previous))) {
+            return false;
+        }
+        char nextChar = raw.charAt(next);
+        if (nextChar != ',' && nextChar != '}' && nextChar != ']') {
+            return false;
+        }
+        int start = previous;
+        while (start > 0) {
+            char ch = raw.charAt(start - 1);
+            if (Character.isDigit(ch) || ch == '-' || ch == '+' || ch == '.' || ch == 'e' || ch == 'E') {
+                start--;
+                continue;
+            }
+            break;
+        }
+        int beforeNumber = previousNonWhitespace(raw, start - 1);
+        if (beforeNumber < 0) {
+            return false;
+        }
+        char before = raw.charAt(beforeNumber);
+        return before == ':' || before == '[' || before == ',';
+    }
+
+    private int previousNonWhitespace(String raw, int from) {
+        for (int i = from; i >= 0; i--) {
+            if (!Character.isWhitespace(raw.charAt(i))) {
+                return i;
+            }
+        }
+        return -1;
+    }
+
+    private int nextNonWhitespace(String raw, int from) {
+        for (int i = Math.max(0, from); i < raw.length(); i++) {
+            if (!Character.isWhitespace(raw.charAt(i))) {
+                return i;
+            }
+        }
+        return -1;
+    }
+
+    private String escapeControlCharsInsideJsonStrings(String raw) {
+        if (raw == null || raw.isEmpty()) {
+            return raw == null ? "" : raw;
+        }
+        StringBuilder out = new StringBuilder(raw.length() + 16);
+        boolean inString = false;
+        boolean escaping = false;
+        for (int i = 0; i < raw.length(); i++) {
+            char ch = raw.charAt(i);
+            if (escaping) {
+                out.append(ch);
+                escaping = false;
+                continue;
+            }
+            if (ch == '\\') {
+                out.append(ch);
+                if (inString) {
+                    escaping = true;
+                }
+                continue;
+            }
+            if (ch == '"') {
+                inString = !inString;
+                out.append(ch);
+                continue;
+            }
+            if (inString) {
+                if (ch == '\n') {
+                    out.append("\\n");
+                    continue;
+                }
+                if (ch == '\r') {
+                    out.append("\\r");
+                    continue;
+                }
+                if (ch == '\t') {
+                    out.append("\\t");
+                    continue;
+                }
+                if (ch < 0x20) {
+                    out.append(String.format("\\u%04x", (int) ch));
+                    continue;
+                }
+            }
+            out.append(ch);
+        }
+        return out.toString();
     }
 
     private Map<String, Object> parseMap(String raw) {
@@ -2511,6 +2648,66 @@ public class KnowledgeGraphExtractionService {
         } catch (Exception ex) {
             return Map.of();
         }
+    }
+
+    private void logExtractionParseFailure(
+            UUID docId,
+            UUID sourceFileId,
+            int batchNo,
+            int batchCount,
+            String raw,
+            Exception ex
+    ) {
+        JsonProcessingException jsonFailure = jsonFailure(ex);
+        log.error("Knowledge graph JSON parse failed: docId={}, sourceFileId={}, batch={}/{}, responseChars={}, location={}, error={}, responseExcerpt={}",
+                docId,
+                sourceFileId,
+                batchNo,
+                batchCount,
+                raw == null ? 0 : raw.length(),
+                jsonLocation(jsonFailure),
+                truncate(ex.getMessage(), 500),
+                responseExcerpt(raw, jsonFailure),
+                ex
+        );
+    }
+
+    private JsonProcessingException jsonFailure(Throwable ex) {
+        Throwable cursor = ex;
+        while (cursor != null) {
+            if (cursor instanceof JsonProcessingException jsonProcessingException) {
+                return jsonProcessingException;
+            }
+            cursor = cursor.getCause();
+        }
+        return null;
+    }
+
+    private String jsonLocation(JsonProcessingException ex) {
+        if (ex == null || ex.getLocation() == null) {
+            return "-";
+        }
+        return "line=" + ex.getLocation().getLineNr()
+                + ",column=" + ex.getLocation().getColumnNr()
+                + ",offset=" + ex.getLocation().getCharOffset();
+    }
+
+    private String responseExcerpt(String raw, JsonProcessingException ex) {
+        if (raw == null || raw.isBlank()) {
+            return "";
+        }
+        int center = -1;
+        if (ex != null && ex.getLocation() != null && ex.getLocation().getCharOffset() >= 0) {
+            center = (int) Math.min(Integer.MAX_VALUE, ex.getLocation().getCharOffset());
+        }
+        if (center < 0 || center >= raw.length()) {
+            center = Math.min(raw.length(), 500);
+        }
+        int start = Math.max(0, center - 260);
+        int end = Math.min(raw.length(), center + 260);
+        return truncate(raw.substring(start, end)
+                .replace("\r", "\\r")
+                .replace("\n", "\\n"), 700);
     }
 
     private String jsonString(Object value) {

@@ -107,6 +107,14 @@ label {
   font-weight: 800;
 }
 
+.field-note {
+  max-width: 260px;
+  color: var(--muted);
+  font-size: 11px;
+  font-weight: 700;
+  line-height: 1.45;
+}
+
 input,
 select {
   min-height: 38px;
@@ -252,6 +260,56 @@ select {
   font-weight: 700;
 }
 
+.profile-summary {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 12px;
+  min-width: 0;
+  font-weight: 800;
+}
+
+.profile-summary span {
+  display: inline-flex;
+  align-items: baseline;
+  gap: 5px;
+  color: var(--muted);
+}
+
+.profile-summary strong {
+  color: var(--text);
+  font-size: 18px;
+}
+
+.action-cards {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(260px, 1fr));
+  gap: 10px;
+  margin-top: 12px;
+}
+
+.action-card {
+  display: grid;
+  gap: 8px;
+  align-content: start;
+  min-height: 108px;
+  padding: 12px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: var(--panel-soft);
+}
+
+.action-card p {
+  margin: 0;
+  color: var(--muted);
+  font-size: 12px;
+  font-weight: 700;
+}
+
+.action-card.danger {
+  background: #fff7ed;
+}
+
 .notice {
   display: none;
   margin: 16px 0;
@@ -274,6 +332,10 @@ select {
   grid-template-columns: repeat(5, minmax(130px, 1fr));
   gap: 10px;
   margin: 16px 0;
+}
+
+.metrics.overview-metrics {
+  margin: 12px 0 0;
 }
 
 .metric {

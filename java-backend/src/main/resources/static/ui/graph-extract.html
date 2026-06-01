@@ -3,40 +3,63 @@
 <head>
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-  <title>Graph Extract Jobs</title>
+  <title>基础图谱抽取</title>
   <link rel="icon" href="/favicon.ico" />
   <link rel="stylesheet" href="/ui/assets/graph-pipeline.css" />
 </head>
 <body>
   <main class="shell">
     <header class="topbar">
-      <div class="brand"><div class="eyebrow">Stage 1</div><h1>抽取任务</h1></div>
+      <div class="brand"><div class="eyebrow">Stage 1</div><h1>基础图谱抽取</h1></div>
       <nav class="nav"><a href="/ui/graph-pipeline.html">流程总览</a><a href="/ui/graph.html">旧图谱页</a></nav>
     </header>
     <div id="stageNav"></div>
     <section class="panel">
       <div class="section-head">
-        <h2>动作</h2>
-        <span>只负责骨架图谱抽取：补建、批量构建、重建成功任务。局部深化请从实体详情或知识包构建入口触发。</span>
+        <h2>先把图谱建起来</h2>
+        <span>这一步只做第一遍粗图谱：每份文件先抽核心实体、核心关系和少量事实。实体深化从实体详情或知识包入口触发。</span>
       </div>
       <div class="runtime-switch">
         <label class="switch-row">
           <input id="autoBuildAfterIndex" type="checkbox" />
           <span class="switch-ui"></span>
-          <span><strong>入库完成后自动骨架构建</strong><small>关闭后，文件索引完成只入库，不自动创建图谱任务；需要时在本页手动批量启动。</small></span>
+          <span><strong>索引完成后自动建基础图谱</strong><small>开启后，新文件索引成功就自动进入本步骤；关闭后，需要在这里手动启动。</small></span>
         </label>
         <span id="autoBuildStatus" class="badge">读取中</span>
       </div>
       <div class="filters">
-        <label>状态<select id="status"><option value="">全部</option><option value="queued">queued</option><option value="running">running</option><option value="success">success</option><option value="failed">failed</option></select></label>
-        <label>数量<input id="limit" type="number" min="1" max="500" value="100" /></label>
-        <label>数据源 ID<input id="dataSourceId" type="text" placeholder="可选" /></label>
+        <label>任务列表状态
+          <select id="status">
+            <option value="">全部</option>
+            <option value="queued">排队</option>
+            <option value="running">运行中</option>
+            <option value="success">成功</option>
+            <option value="failed">失败</option>
+          </select>
+          <small class="field-note">只影响下面任务列表，不影响新建任务。</small>
+        </label>
+        <label>本次最多处理文件数
+          <input id="limit" type="number" min="1" max="500" value="100" />
+          <small class="field-note">点击处理按钮时，最多取这么多份文件。</small>
+        </label>
+        <label>只处理某个数据源
+          <input id="dataSourceId" type="text" placeholder="留空表示全部数据源" />
+          <small class="field-note">需要限定数据源时填 UUID；平时留空。</small>
+        </label>
         <div class="actions">
-          <button id="refreshBtn" class="primary">刷新</button>
-          <button id="backfillBtn">补建缺失</button>
-          <button id="batchBuildBtn">开始骨架构建</button>
-          <button id="batchRebuildBtn">重建成功任务</button>
+          <button id="refreshBtn" class="primary">刷新列表</button>
         </div>
+      </div>
+      <section class="metrics overview-metrics" id="overviewMetrics"></section>
+      <div class="action-cards">
+        <article class="action-card">
+          <button id="backfillBtn" class="primary">处理未成功文件</button>
+          <p>给还没有成功图谱的文件建任务：失败的重新排队，没建过的补建，已经成功的跳过。</p>
+        </article>
+        <article class="action-card danger">
+          <button id="batchRebuildBtn">重跑已成功文件</button>
+          <p>规则或模型改过后才用。会让成功过的文件重新抽取基础图谱。</p>
+        </article>
       </div>
     </section>
     <div id="notice" class="notice"></div>
@@ -50,14 +73,15 @@
   <script type="module">
     import { API_BASE, buildQuery, escapeHtml, metric, request, showNotice, stageNav, statusBadge, summaryValue } from "/ui/assets/graph-pipeline.js";
     const el = {
-      stageNav: document.getElementById("stageNav"), notice: document.getElementById("notice"), metrics: document.getElementById("metrics"),
+      stageNav: document.getElementById("stageNav"), notice: document.getElementById("notice"), metrics: document.getElementById("metrics"), overviewMetrics: document.getElementById("overviewMetrics"),
       status: document.getElementById("status"), limit: document.getElementById("limit"), dataSourceId: document.getElementById("dataSourceId"),
       autoBuildAfterIndex: document.getElementById("autoBuildAfterIndex"), autoBuildStatus: document.getElementById("autoBuildStatus"),
-      refreshBtn: document.getElementById("refreshBtn"), backfillBtn: document.getElementById("backfillBtn"), batchBuildBtn: document.getElementById("batchBuildBtn"), batchRebuildBtn: document.getElementById("batchRebuildBtn"),
+      refreshBtn: document.getElementById("refreshBtn"), backfillBtn: document.getElementById("backfillBtn"), batchRebuildBtn: document.getElementById("batchRebuildBtn"),
       runningRows: document.getElementById("runningRows"), failedRows: document.getElementById("failedRows"), successRows: document.getElementById("successRows"),
       runningCount: document.getElementById("runningCount"), failedCount: document.getElementById("failedCount"), successCount: document.getElementById("successCount")
     };
     let jobs = [];
+    let overview = {};
     el.stageNav.innerHTML = stageNav("extract");
 
     function card(job) {
@@ -79,6 +103,13 @@
 
     function render() {
       const counts = jobs.reduce((acc, job) => { const k = String(job.status || "").toLowerCase(); acc[k] = (acc[k] || 0) + 1; return acc; }, {});
+      el.overviewMetrics.innerHTML = [
+        metric("已抽取总数", overview.extractedFiles ?? 0),
+        metric("未抽取总数", overview.unextractedFiles ?? 0),
+        metric("已索引文件", overview.indexedFiles ?? 0),
+        metric("其中失败", overview.failedFiles ?? 0),
+        metric("从未建图", overview.neverQueuedFiles ?? 0)
+      ].join("");
       el.metrics.innerHTML = [metric("全部", jobs.length), metric("运行", counts.running || 0), metric("排队", counts.queued || 0), metric("成功", counts.success || 0), metric("失败", counts.failed || 0)].join("");
       const running = jobs.filter(j => ["queued", "running"].includes(String(j.status || "").toLowerCase()));
       const failed = jobs.filter(j => String(j.status || "").toLowerCase() === "failed");
@@ -92,7 +123,12 @@
     async function load() {
       try {
         const limit = Math.max(1, Math.min(Number(el.limit.value || 100), 500));
-        jobs = await request(`${API_BASE}/build-jobs${buildQuery({ status: el.status.value, limit })}`);
+        const [jobResult, overviewResult] = await Promise.all([
+          request(`${API_BASE}/build-jobs${buildQuery({ status: el.status.value, limit })}`),
+          request(`${API_BASE}/build-jobs/overview${buildQuery({ dataSourceId: el.dataSourceId.value })}`)
+        ]);
+        jobs = jobResult;
+        overview = overviewResult || {};
         jobs = Array.isArray(jobs) ? jobs : [];
         render();
       } catch (error) {
@@ -120,7 +156,7 @@
       try {
         const settings = await request(`${API_BASE}/runtime-settings/auto-build-after-index${buildQuery({ enabled })}`, { method: "POST" });
         renderRuntimeSettings(settings);
-        showNotice(el.notice, enabled ? "已开启：后续文件索引完成后会自动创建骨架图谱任务" : "已关闭：后续文件索引完成后不会自动创建图谱任务", false);
+        showNotice(el.notice, enabled ? "已开启：后续文件索引完成后会自动创建基础图谱任务" : "已关闭：后续文件索引完成后不会自动创建图谱任务", false);
       } catch (error) {
         el.autoBuildAfterIndex.checked = !enabled;
         showNotice(el.notice, `保存自动建图开关失败：${error.message || error}`, true);
@@ -150,6 +186,7 @@
     el.refreshBtn.addEventListener("click", load);
     el.status.addEventListener("change", load);
     el.limit.addEventListener("change", load);
+    el.dataSourceId.addEventListener("change", load);
     el.autoBuildAfterIndex.addEventListener("change", updateAutoBuildAfterIndex);
     function buildSubmitQuery(rebuildSuccess) {
       return buildQuery({
@@ -160,8 +197,7 @@
         scopeType: "document"
       });
     }
-    el.backfillBtn.addEventListener("click", () => submit(`${API_BASE}/build-jobs/backfill-missing${buildQuery({ limit: el.limit.value, dataSourceId: el.dataSourceId.value })}`, "补建已提交"));
-    el.batchBuildBtn.addEventListener("click", () => submit(`${API_BASE}/build-jobs/batch${buildSubmitQuery(false)}`, "抽取已提交"));
+    el.backfillBtn.addEventListener("click", () => submit(`${API_BASE}/build-jobs/backfill-missing${buildQuery({ limit: el.limit.value, dataSourceId: el.dataSourceId.value })}`, "已提交处理未成功文件"));
     el.batchRebuildBtn.addEventListener("click", () => submit(`${API_BASE}/build-jobs/batch${buildSubmitQuery(true)}`, "重建已提交"));
     document.body.addEventListener("click", event => { const btn = event.target.closest("[data-retry]"); if (btn) retry(btn.getAttribute("data-retry")); });
     loadRuntimeSettings();

@@ -349,6 +349,59 @@ public class KnowledgeGraphBuildService {
         );
     }
 
+    public Map<String, Object> buildJobOverview(UUID dataSourceId) {
+        boolean filterDataSource = dataSourceId != null;
+        Map<String, Object> overview = jdbcTemplate.queryForMap(
+                """
+                SELECT
+                    COUNT(*) FILTER (
+                        WHERE sf.doc_id IS NOT NULL
+                          AND sf.index_status = 'success'
+                    ) AS indexed_files,
+                    COUNT(*) FILTER (
+                        WHERE sf.doc_id IS NOT NULL
+                          AND sf.index_status = 'success'
+                          AND COALESCE(gss.status, 'missing') = 'success'
+                    ) AS extracted_files,
+                    COUNT(*) FILTER (
+                        WHERE sf.doc_id IS NOT NULL
+                          AND sf.index_status = 'success'
+                          AND COALESCE(gss.status, 'missing') <> 'success'
+                    ) AS unextracted_files,
+                    COUNT(*) FILTER (
+                        WHERE sf.doc_id IS NOT NULL
+                          AND sf.index_status = 'success'
+                          AND COALESCE(gss.status, 'missing') = 'failed'
+                    ) AS failed_files,
+                    COUNT(*) FILTER (
+                        WHERE sf.doc_id IS NOT NULL
+                          AND sf.index_status = 'success'
+                          AND COALESCE(gss.status, 'missing') IN ('pending', 'running', 'queued')
+                    ) AS pending_files,
+                    COUNT(*) FILTER (
+                        WHERE sf.doc_id IS NOT NULL
+                          AND sf.index_status = 'success'
+                          AND gss.source_file_id IS NULL
+                    ) AS never_queued_files
+                FROM source_files sf
+                LEFT JOIN graph_sync_state gss ON gss.source_file_id = sf.id
+                WHERE (:filterDataSource = false OR sf.data_source_id = :dataSourceId)
+                """,
+                new MapSqlParameterSource()
+                        .addValue("filterDataSource", filterDataSource)
+                        .addValue("dataSourceId", dataSourceId)
+        );
+        return Map.of(
+                "dataSourceId", dataSourceId == null ? "" : dataSourceId.toString(),
+                "indexedFiles", intValue(overview.get("indexed_files"), 0),
+                "extractedFiles", intValue(overview.get("extracted_files"), 0),
+                "unextractedFiles", intValue(overview.get("unextracted_files"), 0),
+                "failedFiles", intValue(overview.get("failed_files"), 0),
+                "pendingFiles", intValue(overview.get("pending_files"), 0),
+                "neverQueuedFiles", intValue(overview.get("never_queued_files"), 0)
+        );
+    }
+
     public Map<String, Object> retryFailedJob(UUID jobId) {
         if (!isEnabled()) {
             throw new IllegalStateException("Knowledge graph build is disabled.");

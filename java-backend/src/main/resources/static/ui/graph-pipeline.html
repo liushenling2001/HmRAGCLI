@@ -31,10 +31,25 @@
         <label class="switch-row">
           <input id="autoBuildAfterIndex" type="checkbox" />
           <span class="switch-ui"></span>
-          <span><strong>入库完成后自动骨架构建</strong><small>关闭后只完成入库和索引，图谱任务从“抽取任务”页手动启动。</small></span>
+          <span><strong>索引完成后自动建基础图谱</strong><small>关闭后只完成入库和索引，需要到“抽取任务”页手动处理未成功文件。</small></span>
         </label>
         <span id="autoBuildStatus" class="badge">读取中</span>
       </div>
+    </section>
+    <section class="panel">
+      <div class="section-head">
+        <h2>文档画像回填</h2>
+        <span>给旧索引文档补画像，后续图谱抽取会按画像选择更合适的策略。</span>
+      </div>
+      <div class="runtime-switch">
+        <div class="profile-summary" id="profileSummary">
+          <span>可补文档 <strong id="profileEligible">-</strong></span>
+          <span>已有画像 <strong id="profiledDocuments">-</strong></span>
+          <span>缺画像 <strong id="missingProfiles">-</strong></span>
+        </div>
+        <button id="backfillProfiles" class="primary" type="button">补文档画像</button>
+      </div>
+      <div id="profileResult" class="muted">点击后每次最多处理 1000 篇，完成后会显示本次处理、成功、失败和剩余数量。</div>
     </section>
     <section class="metrics" id="metrics"></section>
     <section class="panel">
@@ -54,7 +69,12 @@
       metrics: document.getElementById("metrics"),
       cards: document.getElementById("cards"),
       autoBuildAfterIndex: document.getElementById("autoBuildAfterIndex"),
-      autoBuildStatus: document.getElementById("autoBuildStatus")
+      autoBuildStatus: document.getElementById("autoBuildStatus"),
+      profileEligible: document.getElementById("profileEligible"),
+      profiledDocuments: document.getElementById("profiledDocuments"),
+      missingProfiles: document.getElementById("missingProfiles"),
+      backfillProfiles: document.getElementById("backfillProfiles"),
+      profileResult: document.getElementById("profileResult")
     };
     el.stageNav.innerHTML = stageNav("overview");
 
@@ -93,12 +113,42 @@
       try {
         const settings = await request(`${API_BASE}/runtime-settings/auto-build-after-index${buildQuery({ enabled })}`, { method: "POST" });
         renderRuntimeSettings(settings);
-        showNotice(el.notice, enabled ? "已开启自动骨架构建" : "已关闭自动骨架构建", false);
+        showNotice(el.notice, enabled ? "已开启自动建基础图谱" : "已关闭自动建基础图谱", false);
       } catch (error) {
         el.autoBuildAfterIndex.checked = !enabled;
         showNotice(el.notice, `保存自动建图开关失败：${error.message || error}`, true);
       } finally {
         el.autoBuildAfterIndex.disabled = false;
+      }
+    }
+
+    function renderProfileStats(stats) {
+      el.profileEligible.textContent = stats.eligibleDocuments ?? 0;
+      el.profiledDocuments.textContent = stats.profiledDocuments ?? 0;
+      el.missingProfiles.textContent = stats.missingProfiles ?? stats.remainingMissing ?? 0;
+    }
+
+    async function loadProfileStats() {
+      try {
+        renderProfileStats(await request("/api/v1/document-profiles/stats"));
+      } catch (error) {
+        el.profileResult.textContent = `文档画像统计读取失败：${error.message || error}`;
+      }
+    }
+
+    async function backfillProfiles() {
+      el.backfillProfiles.disabled = true;
+      el.profileResult.textContent = "正在补文档画像，本次最多处理 1000 篇...";
+      try {
+        const result = await request("/api/v1/document-profiles/backfill?limit=1000", { method: "POST" });
+        renderProfileStats(result);
+        el.profileResult.textContent = `回填完成：本次选择 ${result.selected ?? 0}，成功 ${result.succeeded ?? 0}，失败 ${result.failed ?? 0}，剩余 ${result.remainingMissing ?? result.missingProfiles ?? 0}`;
+        showNotice(el.notice, el.profileResult.textContent, false);
+      } catch (error) {
+        el.profileResult.textContent = `文档画像回填失败：${error.message || error}`;
+        showNotice(el.notice, el.profileResult.textContent, true);
+      } finally {
+        el.backfillProfiles.disabled = false;
       }
     }
 
@@ -138,7 +188,9 @@
       }
     }
     el.autoBuildAfterIndex.addEventListener("change", updateAutoBuildAfterIndex);
+    el.backfillProfiles.addEventListener("click", backfillProfiles);
     loadRuntimeSettings();
+    loadProfileStats();
     load();
   </script>
 </body>
